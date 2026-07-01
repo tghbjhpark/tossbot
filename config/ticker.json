@@ -1,0 +1,32 @@
+[
+  {
+    "ticker": "TSLL",
+    "market": "US",
+    "buy_mode": "AMOUNT",
+    "buy_qty": 1,
+    "buy_amount": 20.0,
+    "yield_target": 0.015,
+    "grid_interval": 0.005,
+    "enabled": true
+  },
+  {
+    "ticker": "TQQQ",
+    "market": "US",
+    "buy_mode": "QTY",
+    "buy_qty": 1,
+    "buy_amount": 20.0,
+    "yield_target": 0.01,
+    "grid_interval": 0.004,
+    "enabled": true
+  },
+  {
+    "ticker": "0195S0",
+    "market": "KR",
+    "buy_mode": "AMOUNT",
+    "buy_qty": 1,
+    "buy_amount": 20.0,
+    "yield_target": 0.01,
+    "grid_interval": 0.003,
+    "enabled": true
+  }
+]

@@ -1,0 +1,6 @@
+requests>=2.28.0
+
+schedule>=1.2.0
+pytz>=2023.3
+tzdata>=2023.3
+python-dotenv>=1.0.0

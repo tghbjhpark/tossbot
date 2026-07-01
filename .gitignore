@@ -1,0 +1,22 @@
+# Environment variables & secrets
+.env
+firebase-key.json
+
+# Local database and transient state
+data/
+*.db
+*.db-journal
+*.db-wal
+
+# Python caching & environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*

@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  toss-trade-bot:
+    build: .
+    container_name: toss-trade-bot
+    restart: always
+    environment:
+      # Toss Securities OpenAPI Credentials
+      - TOSS_CLIENT_ID=your_client_id_here
+      - TOSS_CLIENT_SECRET=your_client_secret_here
+      - TOSS_ACCOUNT_SEQ=your_account_seq_here
+      - TOSS_BASE_URL=https://openapi.tossinvest.com
+
+      # SQLite Database Configuration (Optional, defaults to data/toss_trade_bot.db)
+      - SQLITE_DB_PATH=data/toss_trade_bot.db
+      # - FIREBASE_CREDENTIALS_JSON={"type": "service_account", "project_id": ...}
+
+      # Core Trading Settings
+      - TICKER=AAPL
+      - YIELD_TARGET=0.02       # 2% yield per transaction
+      - GRID_INTERVAL=0.01      # 1% grid gap
+      - BUY_QTY=1               # Quantity to trade (must be integer string)
+      - POLLING_INTERVAL=60     # Loop execution rate (seconds)
+      - LOG_LEVEL=INFO
+    volumes:
+      # Mount SQLite database directory locally for data persistence
+      - ./data:/app/data
+      # Mount config directory to allow dynamic reload without Docker volume inode issues
+      - ./config:/app/config
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
