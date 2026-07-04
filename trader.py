@@ -1,6 +1,6 @@
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 from config import TICKERS, TICKER_CONFIGS, reload_config_if_changed
@@ -23,6 +23,10 @@ class GridTrader:
         # Nested memory caches: ticker -> {orderId -> order details}
         self.incomplete_orders = {ticker: {} for ticker in TICKERS}
         self.pending_buy_orders = {ticker: {} for ticker in TICKERS}
+        
+        # Cooldown state for consecutive buys per ticker
+        # Structure: { ticker: { "consecutive_buys": int, "cooldown_until": datetime or None } }
+        self.cooldown_states = {}
 
     def initialize_state(self):
         """
@@ -70,6 +74,47 @@ class GridTrader:
                 )
             for oid, order in buys.items():
                 logger.info(f"  Pending Buy: ID={oid}, Price={order.get('price')}, Qty={order.get('quantity')}")
+
+    def _is_in_cooldown(self, ticker: str) -> bool:
+        """
+        Checks if the ticker is currently locked under the consecutive buy cooldown limit.
+        Resets state if the cooldown period has expired.
+        """
+        config = self.ticker_configs.get(ticker, {})
+        max_buys = config.get("max_consecutive_buys")
+        cooldown_mins = config.get("cooldown_minutes")
+        
+        if max_buys is None or cooldown_mins is None:
+            return False
+            
+        state = self.cooldown_states.setdefault(ticker, {"consecutive_buys": 0, "cooldown_until": None})
+        cooldown_until = state["cooldown_until"]
+        
+        if cooldown_until:
+            if datetime.now() < cooldown_until:
+                logger.info(
+                    f"Ticker [{ticker}] - Buy blocked. Consecutive buys: {state['consecutive_buys']}/{max_buys}. "
+                    f"Cooldown active until {cooldown_until.strftime('%H:%M:%S')}"
+                )
+                return True
+            else:
+                # Cooldown expired! Reset counter.
+                logger.info(f"Ticker [{ticker}] - Cooldown expired. Resetting consecutive buy counter to 0.")
+                state["consecutive_buys"] = 0
+                state["cooldown_until"] = None
+                
+        return False
+
+    def _reset_consecutive_buys(self, ticker: str):
+        """
+        Resets the consecutive buy counter and lifts any active cooldown upon a successful sell execution.
+        """
+        if ticker in self.cooldown_states:
+            state = self.cooldown_states[ticker]
+            if state["consecutive_buys"] > 0 or state["cooldown_until"] is not None:
+                logger.info(f"Ticker [{ticker}] - Successful sell execution detected. Resetting consecutive buys and lifting cooldown.")
+                state["consecutive_buys"] = 0
+                state["cooldown_until"] = None
 
     def is_market_active_for_ticker(self, ticker: str) -> bool:
         """
@@ -211,8 +256,8 @@ class GridTrader:
                     
                     if status == "FILLED":
                         logger.info(f"$$$$ SELL ORDER FILLED $$$$ | Ticker: {ticker} | ID: {order_id} | Price: {target_price:.2f}")
-                        # DB에서 삭제 및 trades_history 완결
                         self.db_manager.remove_incomplete_order(order_id)
+                        self._reset_consecutive_buys(ticker)
                         if order_id in self.incomplete_orders[ticker]:
                             del self.incomplete_orders[ticker][order_id]
                             
@@ -278,6 +323,7 @@ class GridTrader:
                             if status == "FILLED":
                                 logger.info(f"$$$$ SELL ORDER FILLED IN POLLING $$$$ | Ticker: {ticker} | ID: {order_id} | Price: {target_price:.2f}")
                                 self.db_manager.remove_incomplete_order(order_id)
+                                self._reset_consecutive_buys(ticker)
                                 if order_id in self.incomplete_orders[ticker]:
                                     del self.incomplete_orders[ticker][order_id]
                                 break
@@ -306,6 +352,7 @@ class GridTrader:
             # A. 체결 완료된 부분 정산
             self.db_manager.update_incomplete_order_quantity(order_id, filled_qty)
             self.db_manager.remove_incomplete_order(order_id)
+            self._reset_consecutive_buys(ticker)
             if order_id in self.incomplete_orders[ticker]:
                 del self.incomplete_orders[ticker][order_id]
                 
@@ -473,12 +520,31 @@ class GridTrader:
             del self.pending_buy_orders[ticker][buy_order_id]
             
         logger.info(f"Registered synthetic target sell order in DB: {sell_order_id} at {sell_price:.2f} for {qty_formatted} shares.")
+        
+        # Update cooldown state for consecutive buys
+        max_buys = config.get("max_consecutive_buys")
+        cooldown_mins = config.get("cooldown_minutes")
+        if max_buys is not None and cooldown_mins is not None:
+            state = self.cooldown_states.setdefault(ticker, {"consecutive_buys": 0, "cooldown_until": None})
+            state["consecutive_buys"] += 1
+            logger.info(f"Ticker [{ticker}] - Consecutive buy count increased: {state['consecutive_buys']}/{max_buys}")
+            
+            if state["consecutive_buys"] >= int(max_buys):
+                cooldown_until = datetime.now() + timedelta(minutes=int(cooldown_mins))
+                state["cooldown_until"] = cooldown_until
+                logger.warning(
+                    f"Ticker [{ticker}] - Reached maximum consecutive buys ({max_buys}). "
+                    f"Cooldown activated. Buying suspended until {cooldown_until.strftime('%Y-%m-%d %H:%M:%S')}."
+                )
 
     def _evaluate_grid_buying(self, ticker: str, current_price: float):
         """
         Compares current price with the lowest active sell order in memory for a ticker.
         Triggers a new grid buy if target is met.
         """
+        if self._is_in_cooldown(ticker):
+            return
+            
         ticker_sells = self.incomplete_orders.get(ticker, {})
         ticker_pending = self.pending_buy_orders.get(ticker, {})
         

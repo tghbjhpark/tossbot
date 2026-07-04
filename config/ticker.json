@@ -7,7 +7,9 @@
     "buy_amount": 20.0,
     "yield_target": 0.015,
     "grid_interval": 0.005,
-    "enabled": true
+    "enabled": true,
+    "max_consecutive_buys": 5,
+    "cooldown_minutes": 10
   },
   {
     "ticker": "TQQQ",

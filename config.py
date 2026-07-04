@@ -65,7 +65,9 @@ if os.path.exists(TICKER_JSON_PATH):
                         "buy_amount": float(item.get("buy_amount", 10.0)),
                         "yield_target": float(item.get("yield_target", 0.02)),
                         "grid_interval": float(item.get("grid_interval", 0.01)),
-                        "enabled": bool(item.get("enabled", True))
+                        "enabled": bool(item.get("enabled", True)),
+                        "max_consecutive_buys": int(item.get("max_consecutive_buys")) if item.get("max_consecutive_buys") is not None else None,
+                        "cooldown_minutes": int(item.get("cooldown_minutes")) if item.get("cooldown_minutes") is not None else None
                     }
             elif isinstance(configs, dict):
                 for ticker, item in configs.items():
@@ -79,7 +81,9 @@ if os.path.exists(TICKER_JSON_PATH):
                         "buy_amount": float(item.get("buy_amount", 10.0)),
                         "yield_target": float(item.get("yield_target", 0.02)),
                         "grid_interval": float(item.get("grid_interval", 0.01)),
-                        "enabled": bool(item.get("enabled", True))
+                        "enabled": bool(item.get("enabled", True)),
+                        "max_consecutive_buys": int(item.get("max_consecutive_buys")) if item.get("max_consecutive_buys") is not None else None,
+                        "cooldown_minutes": int(item.get("cooldown_minutes")) if item.get("cooldown_minutes") is not None else None
                     }
         TICKERS = list(TICKER_CONFIGS.keys())
         logger.info(f"Loaded {len(TICKERS)} ticker configurations from {TICKER_JSON_PATH}.")
@@ -159,7 +163,9 @@ def reload_config_if_changed() -> bool:
                 "buy_amount": float(item.get("buy_amount", 10.0)),
                 "yield_target": float(item.get("yield_target", 0.02)),
                 "grid_interval": float(item.get("grid_interval", 0.01)),
-                "enabled": bool(enabled)
+                "enabled": bool(enabled),
+                "max_consecutive_buys": int(item.get("max_consecutive_buys")) if item.get("max_consecutive_buys") is not None else None,
+                "cooldown_minutes": int(item.get("cooldown_minutes")) if item.get("cooldown_minutes") is not None else None
             }
             
         # 전역 객체 동적 업데이트 (참조 유지를 위해 clear 후 update)

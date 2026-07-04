@@ -19,6 +19,11 @@
    - 이를 통해 **한국 주식의 양방향 주문 제한(반대 포지션 미체결 에러)**을 원천 우회하고, **미국 주식 마켓 교체기(데이마켓 ↔ 프리마켓)의 매도 주문 강제 취소/유실 문제**를 완벽하게 해결합니다.
    - 매도 주문 역시 1턴 내에 즉시 체결되지 않을 경우 취소 후 대기 상태로 환원되며, 부분 체결 발생 시 체결분만 우선 정산하고 잔량은 신규 매도 대기로 스플릿 관리합니다.
 
+3. **연속 매수 쿨다운 (Consecutive Buy Cooldown - 급락 방지)**:
+   - 매도 거래 없이 하락장에서 연속적으로 매수만 발생하는 경우, 과도한 물타기로 인한 예수금 고갈을 방지하기 위해 지정 횟수(`max_consecutive_buys`) 도달 시 지정된 시간(`cooldown_minutes` 분) 동안 추가 매수 진입을 일시적으로 중단(쿨다운)합니다.
+   - 쿨다운 작동 중이라도 **매도가 1주라도 체결되면** 즉시 연속 매수 카운터가 `0`으로 초기화되고 제한이 해제됩니다.
+   - 설정된 쿨다운 시간(분)이 경과하면 매도가 발생하지 않았더라도 자동으로 카운터가 리셋되고 정상 상태로 복원됩니다.
+
 ---
 
 ## 🛠️ Docker 사용 방법
@@ -76,7 +81,9 @@ TOSS_ACCOUNT_SEQ=your_account_sequence_number
     "buy_amount": 20.0,
     "yield_target": 0.015,
     "grid_interval": 0.005,
-    "enabled": true
+    "enabled": true,
+    "max_consecutive_buys": 5,
+    "cooldown_minutes": 10
   }
 ]
 ```
@@ -92,6 +99,8 @@ TOSS_ACCOUNT_SEQ=your_account_sequence_number
 * **`yield_target`** (Float): 목표 익절 수익률. (예: `0.015` = 1.5% 익절 목표)
 * **`grid_interval`** (Float): 그리드 매수 간격 비율. (예: `0.005` = 직전 체결가 대비 0.5% 하락 시 추가 매수)
 * **`enabled`** (Boolean): `true`일 때 거래가 정상 진행되며, `false`로 변경 시 즉시 매매 및 그리드 감지가 일시정지됩니다.
+* **`max_consecutive_buys`** (Integer, Optional): 매도 없이 연속으로 매수 가능한 최대 횟수. (해당 필드가 없거나 설정하지 않으면 쿨다운 장치가 비활성화되어 기존처럼 계속 매수합니다.)
+* **`cooldown_minutes`** (Integer, Optional): 연속 매수 제한 횟수 도달 시, 매수 감지를 중단할 대기 시간 (분 단위).
 
 ---
 
