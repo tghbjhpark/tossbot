@@ -237,6 +237,15 @@ class GridTrader:
                             
                 except Exception as api_err:
                     logger.error(f"  Failed to verify status for exchange sell order {exchange_order_id}: {api_err}")
+                    # HTTP 400/404 에러 발생 시, 거래소에 없는 주문이므로 exchangeOrderId를 비우고 가상 매도 대기(Standby)로 환원
+                    is_not_found = False
+                    if hasattr(api_err, 'response') and api_err.response is not None:
+                        if api_err.response.status_code in [400, 404]:
+                            is_not_found = True
+                    if is_not_found:
+                        logger.warning(f"  Exchange sell order {exchange_order_id} not found on exchange. Resetting back to standby.")
+                        self.db_manager.update_incomplete_order_exchange_id(order_id, "")
+                        order["exchangeOrderId"] = ""
             
             else:
                 # B. 대기 상태이며 실제 주문이 나가지 않은 상태 -> 가격 도달 시 실제 매도 주문 전송
@@ -375,6 +384,16 @@ class GridTrader:
                             
             except Exception as e:
                 logger.error(f"Error verifying pending buy order {order_id}: {e}")
+                # HTTP 400/404 에러 발생 시, 계좌에 없는 유효하지 않은 주문으로 간주하고 DB/캐시에서 삭제 정돈
+                is_not_found = False
+                if hasattr(e, 'response') and e.response is not None:
+                    if e.response.status_code in [400, 404]:
+                        is_not_found = True
+                if is_not_found:
+                    logger.warning(f"Buy order {order_id} not found on exchange (HTTP {e.response.status_code}). Removing stale record from DB/memory.")
+                    self.db_manager.remove_pending_buy_order(order_id)
+                    if order_id in self.pending_buy_orders[ticker]:
+                        del self.pending_buy_orders[ticker][order_id]
 
     def _process_canceled_buy(self, ticker: str, order_id: str, details: dict):
         """
