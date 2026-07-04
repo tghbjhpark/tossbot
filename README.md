@@ -9,7 +9,8 @@
 ## 📈 매매 전략 개요
 
 1. **그리드 분할 매수 (Grid Buying)**:
-   - **그리드 간격 조건**: 현재 봇에 미체결 매수 주문이 없는 상태에서, 등록되어 있는 매도 대기(incomplete) 주문 중 **가장 낮은 평단가(또는 직전 매수가) 대비 설정된 그리드 간격(`grid_interval`)만큼 하락**한 시점에 신규 그리드 매수를 진입합니다. (예: `grid_interval: 0.005` 설정 시 기준가 대비 0.5% 하락 시 추가 매수)
+   - **하락 그리드 조건**: 현재 봇에 미체결 매수 주문이 없는 상태에서, 등록되어 있는 매도 대기(incomplete) 주문 중 **가장 낮은 평단가(또는 직전 매수가) 대비 설정된 그리드 간격(`grid_interval`)만큼 하락**한 시점에 신규 그리드 매수를 진입합니다. (예: `grid_interval: 0.005` 설정 시 기준가 대비 0.5% 하락 시 추가 매수)
+   - **상승기 그리드 복원 (`fill_grid_on_rise`)**: 하락 쿨다운 등으로 매수를 건너뛰었거나 급상승 시, 현재가 기준 가상 익절 목표가(`current_price * (1 + yield_target)`)의 `+- grid_interval` 오차 범위 내에 등록된 기존 매도 주문이 하나도 없다면(격자 공백 감지), 즉시 추가 매수를 실행해 그리드 격자를 촘촘히 복원 채우기합니다.
    - **수익 설정 (익절 목표가)**: 각각 분할 매수 체결된 진입 가격에 **목표 수익률(`yield_target`)을 1대1로 대응**시켜 개별 익절 가격(`buy_price * (1 + yield_target)`)을 계산하고 독자적인 매도 목표를 수립합니다. (예: `yield_target: 0.015` 설정 시 1.5% 수익 도달 시 익절)
    - **매수 주문 취소**: 다음 턴(Tick)까지 매수가 체결되지 않으면 주문을 즉시 자동 취소하여 현재가 기준으로 그리드 포지션을 원활히 리로드합니다.
 
@@ -83,7 +84,8 @@ TOSS_ACCOUNT_SEQ=your_account_sequence_number
     "grid_interval": 0.005,
     "enabled": true,
     "max_consecutive_buys": 5,
-    "cooldown_minutes": 10
+    "cooldown_minutes": 10,
+    "fill_grid_on_rise": true
   }
 ]
 ```
@@ -101,6 +103,7 @@ TOSS_ACCOUNT_SEQ=your_account_sequence_number
 * **`enabled`** (Boolean): `true`일 때 거래가 정상 진행되며, `false`로 변경 시 즉시 매매 및 그리드 감지가 일시정지됩니다.
 * **`max_consecutive_buys`** (Integer, Optional): 매도 없이 연속으로 매수 가능한 최대 횟수. (해당 필드가 없거나 설정하지 않으면 쿨다운 장치가 비활성화되어 기존처럼 계속 매수합니다.)
 * **`cooldown_minutes`** (Integer, Optional): 연속 매수 제한 횟수 도달 시, 매수 감지를 중단할 대기 시간 (분 단위).
+* **`fill_grid_on_rise`** (Boolean, Optional): 현재가 기준 목표 익절가 부근에 매도 물량이 없을 때, 상승 중에도 그리드 격자를 촘촘히 채우기 위한 신규 추격 매수 활성화 여부. (해당 필드가 없거나 설정하지 않으면 기본적으로 `true`로 동작합니다.)
 
 ---
 

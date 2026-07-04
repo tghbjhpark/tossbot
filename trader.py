@@ -548,16 +548,46 @@ class GridTrader:
         ticker_sells = self.incomplete_orders.get(ticker, {})
         ticker_pending = self.pending_buy_orders.get(ticker, {})
         
+        # If there is already a pending buy order, skip evaluation to prevent duplication
+        if ticker_pending:
+            return
+
+        # Load ticker-specific configurations
+        config = self.ticker_configs.get(ticker, {})
+        yield_target = config.get("yield_target", 0.02)
+        grid_interval = config.get("grid_interval", 0.01)
+        fill_grid_on_rise = config.get("fill_grid_on_rise", True)
+        
         # Check if grid is empty
         if not ticker_sells:
-            if ticker_pending:
-                logger.info(f"Grid for [{ticker}] is empty, but awaiting a pending buy order execution. Skipping initial buy.")
-                return
-                
             logger.info(f"No active sells and no pending buys for [{ticker}]. Placing initial seed buy order...")
             self._place_grid_buy(ticker, current_price)
             return
 
+        # 1. 상승 중 비어있는 그리드 격자 메우기 전략 (fill_grid_on_rise)
+        if fill_grid_on_rise:
+            target_sell_price = current_price * (1 + yield_target)
+            range_min = target_sell_price * (1 - grid_interval)
+            range_max = target_sell_price * (1 + grid_interval)
+            
+            # Check if any incomplete sell order price lies within target_sell_price +- grid_interval
+            has_matching_sell = False
+            for sell_order in ticker_sells.values():
+                sell_p = float(sell_order["price"])
+                if range_min <= sell_p <= range_max:
+                    has_matching_sell = True
+                    break
+                    
+            if not has_matching_sell:
+                logger.warning(
+                    f"Ticker [{ticker}] - Rise grid gap detected. No active sell targets around "
+                    f"target sell price {target_sell_price:.2f} (Checked range: {range_min:.2f} ~ {range_max:.2f}). "
+                    f"Placing chase buy to fill the grid."
+                )
+                self._place_grid_buy(ticker, current_price)
+                return
+
+        # 2. 기존 최저 매도 목표가 대비 하락 매수 (Fall grid buying)
         # Find lowest active target sell price
         sorted_sells = sorted(
             ticker_sells.values(),
