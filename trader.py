@@ -265,7 +265,10 @@ class GridTrader:
                         # 취소된 경우 부분 체결 수량이 있는지 검증
                         self._process_canceled_sell(ticker, order_id, order, details)
                         
-                    else:
+                    elif status in ["PENDING_CANCEL", "PENDING_REPLACE"]:
+                        logger.info(f"  Exchange sell order {exchange_order_id} is in intermediate state {status}. Waiting...")
+                        
+                    elif status in ["PENDING", "PARTIAL_FILLED"]:
                         # 1턴 대기 후 미체결 상태 -> 취소 요청
                         logger.info(f"  Exchange sell order {exchange_order_id} is unfilled ({status}). Cancelling...")
                         try:
@@ -279,6 +282,37 @@ class GridTrader:
                                 logger.warning(f"  Failed to confirm cancel for sell {exchange_order_id} immediately. State: {new_status}")
                         except Exception as cancel_err:
                             logger.error(f"  Failed to cancel exchange sell order {exchange_order_id}: {cancel_err}")
+                            
+                            # cancel-restricted 에러 처리: 이미 취소/체결 완료된 경우 정돈
+                            is_cancel_restricted = False
+                            if hasattr(cancel_err, 'response') and cancel_err.response is not None:
+                                try:
+                                    err_json = cancel_err.response.json()
+                                    if err_json.get("error", {}).get("code") == "cancel-restricted":
+                                        is_cancel_restricted = True
+                                except Exception:
+                                    pass
+                                    
+                            if is_cancel_restricted:
+                                logger.info(f"  Sell order {exchange_order_id} cancel restricted. Fetching latest details...")
+                                try:
+                                    check_details = self.api_client.get_order_details(exchange_order_id)
+                                    check_status = check_details.get("status")
+                                    
+                                    if check_status == "FILLED":
+                                        logger.info(f"$$$$ SELL ORDER FILLED $$$$ | Ticker: {ticker} | ID: {order_id} | Price: {target_price:.2f}")
+                                        self.db_manager.remove_incomplete_order(order_id)
+                                        self._reset_consecutive_buys(ticker)
+                                        if order_id in self.incomplete_orders[ticker]:
+                                            del self.incomplete_orders[ticker][order_id]
+                                    else:
+                                        logger.info(f"  Treating restricted cancel sell order {exchange_order_id} as CANCELED/inactive.")
+                                        self._process_canceled_sell(ticker, order_id, order, check_details)
+                                except Exception as check_err:
+                                    logger.error(f"  Failed to process details for sell order {exchange_order_id} after restricted cancel: {check_err}")
+                                    
+                    else:
+                        logger.warning(f"  Exchange sell order {exchange_order_id} has unexpected status: {status}. Doing nothing.")
                             
                 except Exception as api_err:
                     logger.error(f"  Failed to verify status for exchange sell order {exchange_order_id}: {api_err}")
@@ -409,7 +443,10 @@ class GridTrader:
                 elif status in ["CANCELED", "REJECTED"]:
                     self._process_canceled_buy(ticker, order_id, details)
                     
-                else:
+                elif status in ["PENDING_CANCEL", "PENDING_REPLACE"]:
+                    logger.info(f"  Buy order {order_id} is in intermediate state {status}. Waiting...")
+                    
+                elif status in ["PENDING", "PARTIAL_FILLED"]:
                     # 다음 턴까지 체결되지 않은 주문은 즉시 취소 요청
                     logger.info(f"  Buy order {order_id} is still pending with status {status}. Cancelling to reload in next tick...")
                     try:
@@ -428,6 +465,36 @@ class GridTrader:
                             )
                     except Exception as cancel_err:
                         logger.error(f"  Failed to cancel buy order {order_id}: {cancel_err}")
+                        
+                        # cancel-restricted 에러 처리: 이미 취소/체결 완료된 경우 정돈
+                        is_cancel_restricted = False
+                        if hasattr(cancel_err, 'response') and cancel_err.response is not None:
+                            try:
+                                err_json = cancel_err.response.json()
+                                if err_json.get("error", {}).get("code") == "cancel-restricted":
+                                    is_cancel_restricted = True
+                            except Exception:
+                                pass
+                                
+                        if is_cancel_restricted:
+                            logger.info(f"  Buy order {order_id} cancel restricted. Fetching latest details...")
+                            try:
+                                check_details = self.api_client.get_order_details(order_id)
+                                check_status = check_details.get("status")
+                                execution = check_details.get("execution", {})
+                                filled_qty = float(execution.get("filledQuantity", "0") or "0")
+                                
+                                if check_status == "FILLED" or filled_qty > 0:
+                                    logger.info(f"  Treating restricted cancel buy order {order_id} as FILLED/partially filled (qty: {filled_qty})")
+                                    self._handle_filled_buy(ticker, order_id, check_details)
+                                else:
+                                    logger.info(f"  Treating restricted cancel buy order {order_id} as CANCELED/inactive.")
+                                    self._process_canceled_buy(ticker, order_id, check_details)
+                            except Exception as check_err:
+                                logger.error(f"  Failed to process details for buy order {order_id} after restricted cancel: {check_err}")
+                                
+                else:
+                    logger.warning(f"  Buy order {order_id} has unexpected status: {status}. Doing nothing.")
                             
             except Exception as e:
                 logger.error(f"Error verifying pending buy order {order_id}: {e}")
