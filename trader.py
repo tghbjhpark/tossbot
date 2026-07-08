@@ -125,15 +125,15 @@ class GridTrader:
         market = config.get("market", "US").upper()
         
         if market == "KR":
-            # Korea market hours check: Monday-Friday, 09:10 AM to 02:50 PM KST
+            # Korea market hours check: Monday-Friday, 09:00 AM to 03:20 PM KST
             tz_kst = pytz.timezone("Asia/Seoul")
             now_kst = datetime.now(tz_kst)
             
             if now_kst.weekday() >= 5:
                 return False
                 
-            start_time = now_kst.replace(hour=9, minute=10, second=0, microsecond=0)
-            end_time = now_kst.replace(hour=14, minute=50, second=0, microsecond=0)
+            start_time = now_kst.replace(hour=9, minute=0, second=0, microsecond=0)
+            end_time = now_kst.replace(hour=15, minute=20, second=0, microsecond=0)
             
             return start_time <= now_kst <= end_time
             
