@@ -5,7 +5,7 @@ import logging
 from config import POLLING_INTERVAL, TICKERS
 from sqlite_manager import SQLiteManager
 from toss_api import TossAPIClient
-from trader import GridTrader
+from trader import TradeBot
 
 logger = logging.getLogger("TossTradeBot.Main")
 
@@ -45,7 +45,7 @@ def main():
         sys.exit(1)
         
     # 3. Instantiate Trader and load caching state
-    trader = GridTrader(api_client, db_manager)
+    trader = TradeBot(api_client, db_manager)
     trader.initialize_state()
     
     logger.info(f"Bot successfully started. Target Stocks: {TICKERS}. Loop interval: {POLLING_INTERVAL} seconds.")

@@ -59,6 +59,7 @@ if os.path.exists(TICKER_JSON_PATH):
                     market = item.get("market", "KR" if ticker.isdigit() else "US").upper()
                     TICKER_CONFIGS[ticker] = {
                         "ticker": ticker,
+                        "strategy": item.get("strategy", "GRID").upper().strip(),
                         "market": market,
                         "buy_mode": item.get("buy_mode", "QTY" if market == "KR" else "AMOUNT").upper(),
                         "buy_qty": int(item.get("buy_qty", 1)),
@@ -76,6 +77,7 @@ if os.path.exists(TICKER_JSON_PATH):
                     market = item.get("market", "KR" if ticker.isdigit() else "US").upper()
                     TICKER_CONFIGS[ticker] = {
                         "ticker": ticker,
+                        "strategy": item.get("strategy", "GRID").upper().strip(),
                         "market": market,
                         "buy_mode": item.get("buy_mode", "QTY" if market == "KR" else "AMOUNT").upper(),
                         "buy_qty": int(item.get("buy_qty", 1)),
@@ -100,6 +102,7 @@ if not TICKER_CONFIGS:
         market = "KR" if ticker.isdigit() else "US"
         config_item = {
             "ticker": ticker,
+            "strategy": "GRID",
             "market": market,
             "buy_mode": DEFAULT_BUY_MODE,
             "buy_qty": DEFAULT_BUY_QTY,
@@ -159,6 +162,7 @@ def reload_config_if_changed() -> bool:
                 
             new_configs[ticker] = {
                 "ticker": ticker,
+                "strategy": item.get("strategy", "GRID").upper().strip(),
                 "market": market,
                 "buy_mode": item.get("buy_mode", "QTY" if market == "KR" else "AMOUNT").upper(),
                 "buy_qty": int(item.get("buy_qty", 1)),
