@@ -102,25 +102,42 @@ TOSS_ACCOUNT_SEQ=your_account_sequence_number
     "max_consecutive_buys": 5,
     "cooldown_minutes": 10,
     "fill_grid_on_rise": true
+  },
+  {
+    "ticker": "TQQQ",
+    "strategy": "DCA",
+    "market": "US",
+    "buy_mode": "AMOUNT",
+    "buy_amount": 20.0,
+    "yield_target": 0.10,
+    "max_session_buys": 40,
+    "trailing_drop_rate": 0.01,
+    "enabled": true
   }
 ]
 ```
 
 #### 필드 명세
 * **`ticker`** (String): 매매할 종목의 티커 혹은 단축 코드 (예: `TSLL`, `TQQQ`, `0195S0` 등).
-* **`strategy`** (String, Optional): 해당 종목에 적용할 매매 전략. 기본값은 `"GRID"` 입니다. 향후 추가되는 전략명으로 지정할 수 있습니다.
+* **`strategy`** (String, Optional): 해당 종목에 적용할 매매 전략.
+  - `GRID`: 그리드 분할 매수 및 개별 대응 매도 대기 전략 (기본값).
+  - `DCA`: 라오어 무한매수법 응용 전략. 고정 시간 분할 매수 및 트레일링 스톱 전량 청산 전략.
 * **`market`** (String): `US` (미국 주식) 또는 `KR` (한국 주식).
 * **`buy_mode`** (String): 
   - `QTY` (수량 지정 매수): 정수 수량 기준으로 매수 주문 제출.
   - `AMOUNT` (금액 지정 매수): 소수점 금액 주문 형태로 매수 주문 제출. (미국 소수점 거래 및 국내 소수점 거래용)
 * **`buy_qty`** (Integer): `buy_mode`가 `QTY`일 때 1회당 매수할 주식 수.
 * **`buy_amount`** (Float): `buy_mode`가 `AMOUNT`일 때 1회당 매수할 한화/외화 금액.
-* **`yield_target`** (Float): 목표 익절 수익률. (예: `0.015` = 1.5% 익절 목표)
-* **`grid_interval`** (Float): 그리드 매수 간격 비율. (예: `0.005` = 직전 체결가 대비 0.5% 하락 시 추가 매수)
-* **`enabled`** (Boolean): `true`일 때 거래가 정상 진행되며, `false`로 변경 시 즉시 매매 및 그리드 감지가 일시정지됩니다.
-* **`max_consecutive_buys`** (Integer, Optional): 매도 없이 연속으로 매수 가능한 최대 횟수. (해당 필드가 없거나 설정하지 않으면 쿨다운 장치가 비활성화되어 기존처럼 계속 매수합니다.)
-* **`cooldown_minutes`** (Integer, Optional): 연속 매수 제한 횟수 도달 시, 매수 감지를 중단할 대기 시간 (분 단위).
-* **`fill_grid_on_rise`** (Boolean, Optional): 현재가 기준 목표 익절가 부근에 매도 물량이 없을 때, 상승 중에도 그리드 격자를 촘촘히 채우기 위한 신규 추격 매수 활성화 여부. (해당 필드가 없거나 설정하지 않으면 기본적으로 `true`로 동작합니다.)
+* **`yield_target`** (Float): 목표 익절 수익률. 
+  - `GRID` 전략: 각 분할 매수 건의 익절 마진 비율 (예: `0.015` = 1.5% 익절).
+  - `DCA` 전략: 트레일링 스톱이 작동을 시작할 기준 수익률 (예: `0.10` = 평단 대비 10% 상승 시 트레일링 스톱 활성화).
+* **`grid_interval`** (Float, GRID 전용): 그리드 매수 간격 비율. (예: `0.005` = 직전 체결가 대비 0.5% 하락 시 추가 매수)
+* **`enabled`** (Boolean): `true`일 때 거래가 정상 진행되며, `false`로 변경 시 즉시 매매 및 포지션 감지가 일시정지됩니다.
+* **`max_session_buys`** (Integer, DCA 전용): 현재 DCA 세션에서 누적하여 매수할 수 있는 최대 횟수 $N$ (예: `40`).
+* **`trailing_drop_rate`** (Float, DCA 전용): 트레일링 스톱 활성화 이후 최고가 대비 하락 시 전량 매도를 체결시킬 하락 감지 비율 (예: `0.01` = 최고가 대비 1% 하락 시 시장가 전량 매도).
+* **`max_consecutive_buys`** (Integer, GRID 전용, Optional): 매도 없이 연속으로 매수 가능한 최대 횟수. (해당 필드가 없거나 설정하지 않으면 쿨다운 장치가 비활성화되어 기존처럼 계속 매수합니다.)
+* **`cooldown_minutes`** (Integer, GRID 전용, Optional): 연속 매수 제한 횟수 도달 시, 매수 감지를 중단할 대기 시간 (분 단위).
+* **`fill_grid_on_rise`** (Boolean, GRID 전용, Optional): 현재가 기준 목표 익절가 부근에 매도 물량이 없을 때, 상승 중에도 그리드 격자를 촘촘히 채우기 위한 신규 추격 매수 활성화 여부. (해당 필드가 없거나 설정하지 않으면 기본적으로 `true`로 동작합니다.)
 
 ---
 
