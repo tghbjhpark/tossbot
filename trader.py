@@ -51,16 +51,31 @@ class TradeBot:
         Loads active order caches from SQLite and distributes them to matching strategy instances.
         """
         logger.info("Initializing in-memory state from SQLite for strategies...")
-        raw_incomplete = self.db_manager.get_incomplete_orders()
-        raw_pending = self.db_manager.get_pending_buy_orders()
+        
+        # Load GRID data
+        raw_grid_incomplete = self.db_manager.get_incomplete_orders()
+        raw_grid_pending = self.db_manager.get_pending_buy_orders()
+        
+        # Load DCA data
+        raw_dca_incomplete = self.db_manager.get_dca_incomplete_orders()
+        raw_dca_pending = self.db_manager.get_dca_pending_buy_orders()
         
         for ticker, strategy in self.strategies.items():
-            strategy.incomplete_orders = {
-                oid: order for oid, order in raw_incomplete.items() if order.get("symbol") == ticker
-            }
-            strategy.pending_buy_orders = {
-                oid: order for oid, order in raw_pending.items() if order.get("symbol") == ticker
-            }
+            strategy_name = strategy.config.get("strategy", "GRID").upper()
+            if strategy_name == "DCA":
+                strategy.incomplete_orders = {
+                    oid: order for oid, order in raw_dca_incomplete.items() if order.get("symbol") == ticker
+                }
+                strategy.pending_buy_orders = {
+                    oid: order for oid, order in raw_dca_pending.items() if order.get("symbol") == ticker
+                }
+            else: # GRID
+                strategy.incomplete_orders = {
+                    oid: order for oid, order in raw_grid_incomplete.items() if order.get("symbol") == ticker
+                }
+                strategy.pending_buy_orders = {
+                    oid: order for oid, order in raw_grid_pending.items() if order.get("symbol") == ticker
+                }
             strategy.initialize_state()
 
     def is_market_active_for_ticker(self, ticker: str) -> bool:
