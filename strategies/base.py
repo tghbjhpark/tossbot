@@ -80,6 +80,25 @@ class BaseStrategy:
             self.cooldown_state["consecutive_buys"] = 0
             self.cooldown_state["cooldown_until"] = None
 
+    def _extract_filled_price(self, details: dict) -> float | None:
+        """
+        Safely extracts actual filled price from order details.
+        """
+        execution = details.get("execution", {})
+        avg_price_str = execution.get("averageFilledPrice")
+        if avg_price_str:
+            try:
+                return float(avg_price_str)
+            except (ValueError, TypeError):
+                pass
+        price_val = details.get("price")
+        if price_val is not None:
+            try:
+                return float(price_val)
+            except (ValueError, TypeError):
+                pass
+        return None
+
     def _verify_sell_executions(self, current_price: float):
         """
         Reconciles incomplete sell orders with exchange state.
@@ -107,8 +126,9 @@ class BaseStrategy:
                     logger.info(f"  Checking exchange sell order {exchange_order_id} | Status: {status}")
                     
                     if status == "FILLED":
-                        logger.info(f"$$$$ SELL ORDER FILLED $$$$ | Ticker: {self.ticker} | ID: {order_id} | Price: {target_price:.2f}")
-                        self.db_manager.remove_incomplete_order(order_id)
+                        actual_sell_price = self._extract_filled_price(details)
+                        logger.info(f"$$$$ SELL ORDER FILLED $$$$ | Ticker: {self.ticker} | ID: {order_id} | Target Price: {target_price:.2f} | Actual: {actual_sell_price}")
+                        self.db_manager.remove_incomplete_order(order_id, actual_sell_price)
                         self._reset_consecutive_buys()
                         if order_id in self.incomplete_orders:
                             del self.incomplete_orders[order_id]
@@ -149,8 +169,9 @@ class BaseStrategy:
                                     check_status = check_details.get("status")
                                     
                                     if check_status == "FILLED":
-                                        logger.info(f"$$$$ SELL ORDER FILLED $$$$ | Ticker: {self.ticker} | ID: {order_id} | Price: {target_price:.2f}")
-                                        self.db_manager.remove_incomplete_order(order_id)
+                                        actual_sell_price = self._extract_filled_price(check_details)
+                                        logger.info(f"$$$$ SELL ORDER FILLED $$$$ | Ticker: {self.ticker} | ID: {order_id} | Target Price: {target_price:.2f} | Actual: {actual_sell_price}")
+                                        self.db_manager.remove_incomplete_order(order_id, actual_sell_price)
                                         self._reset_consecutive_buys()
                                         if order_id in self.incomplete_orders:
                                             del self.incomplete_orders[order_id]

@@ -185,7 +185,7 @@ class DcaStrategy(BaseStrategy):
                     if status == "FILLED":
                         execution = details.get("execution", {})
                         avg_price_str = execution.get("averageFilledPrice")
-                        sell_price = float(avg_price_str) if avg_price_str else float(details.get("price"))
+                        sell_price = float(avg_price_str) if avg_price_str else (float(p) if (p := details.get("price")) is not None else 0.0)
                         filled = True
                         break
                 except Exception as poll_err:
@@ -197,7 +197,7 @@ class DcaStrategy(BaseStrategy):
                     details = self.api_client.get_order_details(sell_order_id)
                     execution = details.get("execution", {})
                     avg_price_str = execution.get("averageFilledPrice")
-                    sell_price = float(avg_price_str) if avg_price_str else float(details.get("price", 0.0))
+                    sell_price = float(avg_price_str) if avg_price_str else (float(p) if (p := details.get("price")) is not None else 0.0)
                 except Exception:
                     pass
 

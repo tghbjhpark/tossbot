@@ -233,7 +233,7 @@ class SQLiteManager:
             logger.error(f"Error adding incomplete order {order_id} to SQLite: {e}")
             return False
 
-    def remove_incomplete_order(self, order_id: str) -> bool:
+    def remove_incomplete_order(self, order_id: str, actual_sell_price: float = None) -> bool:
         """
         Deletes a sell order from SQLite and marks the matching trade history record as COMPLETED.
         """
@@ -250,7 +250,7 @@ class SQLiteManager:
             
             if order:
                 buy_price = order["buy_price"]
-                sell_price = order["price"]
+                sell_price = actual_sell_price if (actual_sell_price is not None and actual_sell_price > 0) else order["price"]
                 quantity = order["quantity"]
                 profit = (sell_price - buy_price) * quantity
                 sell_time = datetime.now().isoformat()
@@ -264,7 +264,7 @@ class SQLiteManager:
                     """,
                     (sell_price, sell_time, profit, "COMPLETED", order_id)
                 )
-                logger.info(f"Matched trade history completed for sell order {order_id}. Profit: {profit:.4f}")
+                logger.info(f"Matched trade history completed for sell order {order_id}. Actual Sell Price: {sell_price:.4f}, Profit: {profit:.4f}")
             else:
                 logger.warning(f"Could not find matching incomplete order {order_id} to record in trade history.")
 
