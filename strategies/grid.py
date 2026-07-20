@@ -16,6 +16,11 @@ class GridStrategy(BaseStrategy):
         # Step 2: Reconcile Pending Buy Executions
         self._verify_buy_executions()
         
+        # If the ticker is disabled, block any new buys
+        if not self.config.get("enabled", True):
+            logger.debug(f"Grid Ticker [{self.ticker}] is disabled. Skipping new buy checks.")
+            return
+        
         # Step 3: Evaluate grid buying triggers
         if self._is_in_cooldown():
             return

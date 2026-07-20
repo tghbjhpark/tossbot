@@ -38,6 +38,11 @@ class DcaStrategy(BaseStrategy):
         # 2. Check and process trailing stop status / liquidation
         self._evaluate_trailing_stop(current_price)
 
+        # If the ticker is disabled, block any new buys
+        if not self.config.get("enabled", True):
+            logger.debug(f"DCA Ticker [{self.ticker}] is disabled. Skipping new buy checks.")
+            return
+
         # 3. Check time slots for buying (in KST timezone)
         tz_kst = pytz.timezone("Asia/Seoul")
         now_kst = datetime.now(tz_kst)

@@ -130,11 +130,15 @@ class TradeBot:
                 self.initialize_strategies()
                 self.initialize_state()
 
-            # Filter tickers that have active market sessions and are enabled
+            # Filter tickers that have active market sessions
             active_tickers = [
                 t for t in TICKERS 
-                if self.is_market_active_for_ticker(t) and self.strategies[t].config.get("enabled", True)
+                if self.is_market_active_for_ticker(t)
             ]
+            
+            # Segregate enabled tickers and disabled (sell-only) tickers
+            enabled_tickers = [t for t in active_tickers if self.strategies[t].config.get("enabled", True)]
+            sell_only_tickers = [t for t in active_tickers if not self.strategies[t].config.get("enabled", True)]
             
             # Log current times for user convenience
             tz_est = pytz.timezone("America/New_York")
@@ -144,11 +148,11 @@ class TradeBot:
             logger.info(
                 f"Market Check Tick | New York Time: {now_est.strftime('%Y-%m-%d %H:%M:%S %Z')} | "
                 f"Korea Time: {now_kst.strftime('%Y-%m-%d %H:%M:%S %Z')} | "
-                f"Active Tickers: {active_tickers}"
+                f"Active Tickers (Enabled): {enabled_tickers} | Active Tickers (Sell-only): {sell_only_tickers}"
             )
             
             if not active_tickers:
-                logger.info("No active market sessions for any enabled configured tickers right now.")
+                logger.info("No active market sessions for any configured tickers right now.")
                 return
  
             logger.info("Starting batch trading iteration for active tickers...")
