@@ -219,8 +219,9 @@ class BaseStrategy:
                             status = details.get("status")
                             logger.info(f"  Polling fresh sell [{self.ticker}] | Attempt {attempt + 1}/3 | Status: {status}")
                             if status == "FILLED":
-                                logger.info(f"$$$$ SELL ORDER FILLED IN POLLING $$$$ | Ticker: {self.ticker} | ID: {order_id} | Price: {target_price:.2f}")
-                                self.db_manager.remove_incomplete_order(order_id)
+                                actual_sell_price = self._extract_filled_price(details)
+                                logger.info(f"$$$$ SELL ORDER FILLED IN POLLING $$$$ | Ticker: {self.ticker} | ID: {order_id} | Target Price: {target_price:.2f} | Actual: {actual_sell_price}")
+                                self.db_manager.remove_incomplete_order(order_id, actual_sell_price)
                                 self._reset_consecutive_buys()
                                 if order_id in self.incomplete_orders:
                                     del self.incomplete_orders[order_id]
@@ -244,9 +245,10 @@ class BaseStrategy:
             logger.info(f"Sell order {order_id} cancel confirmed with partial execution of {filled_qty} shares.")
             total_qty = float(order["quantity"])
             remaining_qty = total_qty - filled_qty
+            actual_sell_price = self._extract_filled_price(details)
             
             self.db_manager.update_incomplete_order_quantity(order_id, filled_qty)
-            self.db_manager.remove_incomplete_order(order_id)
+            self.db_manager.remove_incomplete_order(order_id, actual_sell_price)
             self._reset_consecutive_buys()
             if order_id in self.incomplete_orders:
                 del self.incomplete_orders[order_id]
