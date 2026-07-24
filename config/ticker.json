@@ -13,12 +13,16 @@
   },
   {
     "ticker": "TQQQ",
+    "strategy": "DCA",
     "market": "US",
     "buy_mode": "QTY",
     "buy_qty": 1,
     "buy_amount": 20.0,
-    "yield_target": 0.01,
-    "grid_interval": 0.004,
+    "yield_target": 0.10,
+    "max_session_buys": 40,
+    "min_session_buys": 6,
+    "min_sell_qty": 1.0,
+    "trailing_drop_rate": 0.01,
     "enabled": true
   },
   {

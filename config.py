@@ -46,49 +46,40 @@ DEFAULT_BUY_AMOUNT = float(os.getenv("BUY_AMOUNT", "10.0"))
 TICKER_CONFIGS = {}
 TICKERS = []
 
+def parse_ticker_item(item: dict) -> dict:
+    ticker = item.get("ticker", "").upper().strip()
+    if not ticker:
+        return {}
+    market = item.get("market", "KR" if ticker.isdigit() else "US").upper()
+    return {
+        "ticker": ticker,
+        "strategy": item.get("strategy", "GRID").upper().strip(),
+        "market": market,
+        "buy_mode": item.get("buy_mode", "QTY" if market == "KR" else "AMOUNT").upper(),
+        "buy_qty": int(item.get("buy_qty", 1)),
+        "buy_amount": float(item.get("buy_amount", 10.0)),
+        "yield_target": float(item.get("yield_target", 0.02)),
+        "grid_interval": float(item.get("grid_interval", 0.01)),
+        "enabled": bool(item.get("enabled", True)),
+        "max_consecutive_buys": int(item.get("max_consecutive_buys")) if item.get("max_consecutive_buys") is not None else None,
+        "cooldown_minutes": int(item.get("cooldown_minutes")) if item.get("cooldown_minutes") is not None else None,
+        "fill_grid_on_rise": bool(item.get("fill_grid_on_rise", True)),
+        "max_session_buys": int(item.get("max_session_buys", 40)),
+        "min_session_buys": int(item.get("min_session_buys", 6)),
+        "min_sell_qty": float(item.get("min_sell_qty", 1.0)),
+        "trailing_drop_rate": float(item.get("trailing_drop_rate", 0.01))
+    }
+
 # Load config from ticker.json
 if os.path.exists(TICKER_JSON_PATH):
     try:
         with open(TICKER_JSON_PATH, "r", encoding="utf-8") as f:
             configs = json.load(f)
-            if isinstance(configs, list):
-                for item in configs:
-                    ticker = item.get("ticker", "").upper().strip()
-                    if not ticker:
-                        continue
-                    market = item.get("market", "KR" if ticker.isdigit() else "US").upper()
-                    TICKER_CONFIGS[ticker] = {
-                        "ticker": ticker,
-                        "strategy": item.get("strategy", "GRID").upper().strip(),
-                        "market": market,
-                        "buy_mode": item.get("buy_mode", "QTY" if market == "KR" else "AMOUNT").upper(),
-                        "buy_qty": int(item.get("buy_qty", 1)),
-                        "buy_amount": float(item.get("buy_amount", 10.0)),
-                        "yield_target": float(item.get("yield_target", 0.02)),
-                        "grid_interval": float(item.get("grid_interval", 0.01)),
-                        "enabled": bool(item.get("enabled", True)),
-                        "max_consecutive_buys": int(item.get("max_consecutive_buys")) if item.get("max_consecutive_buys") is not None else None,
-                        "cooldown_minutes": int(item.get("cooldown_minutes")) if item.get("cooldown_minutes") is not None else None,
-                        "fill_grid_on_rise": bool(item.get("fill_grid_on_rise", True))
-                    }
-            elif isinstance(configs, dict):
-                for ticker, item in configs.items():
-                    ticker = ticker.upper().strip()
-                    market = item.get("market", "KR" if ticker.isdigit() else "US").upper()
-                    TICKER_CONFIGS[ticker] = {
-                        "ticker": ticker,
-                        "strategy": item.get("strategy", "GRID").upper().strip(),
-                        "market": market,
-                        "buy_mode": item.get("buy_mode", "QTY" if market == "KR" else "AMOUNT").upper(),
-                        "buy_qty": int(item.get("buy_qty", 1)),
-                        "buy_amount": float(item.get("buy_amount", 10.0)),
-                        "yield_target": float(item.get("yield_target", 0.02)),
-                        "grid_interval": float(item.get("grid_interval", 0.01)),
-                        "enabled": bool(item.get("enabled", True)),
-                        "max_consecutive_buys": int(item.get("max_consecutive_buys")) if item.get("max_consecutive_buys") is not None else None,
-                        "cooldown_minutes": int(item.get("cooldown_minutes")) if item.get("cooldown_minutes") is not None else None,
-                        "fill_grid_on_rise": bool(item.get("fill_grid_on_rise", True))
-                    }
+            items = configs if isinstance(configs, list) else configs.values()
+            for item in items:
+                parsed = parse_ticker_item(item)
+                if parsed:
+                    TICKER_CONFIGS[parsed["ticker"]] = parsed
         TICKERS = list(TICKER_CONFIGS.keys())
         logger.info(f"Loaded {len(TICKERS)} ticker configurations from {TICKER_JSON_PATH}.")
     except Exception as e:
@@ -112,7 +103,7 @@ if not TICKER_CONFIGS:
             "enabled": True
         }
         default_configs.append(config_item)
-        TICKER_CONFIGS[ticker] = config_item
+        TICKER_CONFIGS[ticker] = parse_ticker_item(config_item)
     
     TICKERS = list(TICKER_CONFIGS.keys())
     try:
@@ -154,26 +145,9 @@ def reload_config_if_changed() -> bool:
         items = configs if isinstance(configs, list) else configs.values()
         
         for item in items:
-            ticker = item.get("ticker", "").upper().strip()
-            if not ticker:
-                continue
-            market = item.get("market", "KR" if ticker.isdigit() else "US").upper()
-            enabled = item.get("enabled", True)
-                
-            new_configs[ticker] = {
-                "ticker": ticker,
-                "strategy": item.get("strategy", "GRID").upper().strip(),
-                "market": market,
-                "buy_mode": item.get("buy_mode", "QTY" if market == "KR" else "AMOUNT").upper(),
-                "buy_qty": int(item.get("buy_qty", 1)),
-                "buy_amount": float(item.get("buy_amount", 10.0)),
-                "yield_target": float(item.get("yield_target", 0.02)),
-                "grid_interval": float(item.get("grid_interval", 0.01)),
-                "enabled": bool(enabled),
-                "max_consecutive_buys": int(item.get("max_consecutive_buys")) if item.get("max_consecutive_buys") is not None else None,
-                "cooldown_minutes": int(item.get("cooldown_minutes")) if item.get("cooldown_minutes") is not None else None,
-                "fill_grid_on_rise": bool(item.get("fill_grid_on_rise", True))
-            }
+            parsed = parse_ticker_item(item)
+            if parsed:
+                new_configs[parsed["ticker"]] = parsed
             
         # 전역 객체 동적 업데이트 (참조 유지를 위해 clear 후 update)
         TICKER_CONFIGS.clear()
@@ -183,6 +157,11 @@ def reload_config_if_changed() -> bool:
         TICKERS.extend(list(TICKER_CONFIGS.keys()))
         
         _last_mtime = current_mtime
+        logger.info(f"Dynamically reloaded configurations. Active Tickers: {TICKERS}")
+        return True
+    except Exception as e:
+        logger.error(f"Error during dynamic config reload: {e}")
+        return False
         logger.info(f"Dynamically reloaded configurations. Active Tickers: {TICKERS}")
         return True
     except Exception as e:

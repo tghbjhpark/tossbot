@@ -21,9 +21,12 @@ class DcaStrategy(BaseStrategy):
         is_trailing = state.get("is_trailing", 0)
         peak_price = state.get("peak_price", 0.0)
 
+        min_session_buys = int(self.config.get("min_session_buys", 6))
+        min_sell_qty = float(self.config.get("min_sell_qty", 1.0))
         logger.info(
             f"DCA Ticker [{self.ticker}] | Active Buys: {len(self.incomplete_orders)} | "
             f"Pending Buys: {len(self.pending_buy_orders)} | "
+            f"Min Buys Limit: {min_session_buys} | Min Qty Limit: {min_sell_qty:.2f} | "
             f"Trailing Active: {bool(is_trailing)} | Peak Price: {peak_price:.2f}"
         )
         for oid, order in self.incomplete_orders.items():
@@ -122,6 +125,25 @@ class DcaStrategy(BaseStrategy):
             total_cost += qty * price
 
         if total_qty == 0.0:
+            return
+
+        # Check minimum buy count threshold
+        buy_count = len(self.incomplete_orders)
+        min_session_buys = int(self.config.get("min_session_buys", 6))
+        if buy_count < min_session_buys:
+            logger.info(
+                f"DCA Trailing Check [{self.ticker}] | Buy Count: {buy_count}/{min_session_buys} "
+                f"(Below min_session_buys={min_session_buys}). Skipping trailing stop check."
+            )
+            return
+
+        # Check minimum sell quantity threshold
+        min_sell_qty = float(self.config.get("min_sell_qty", 1.0))
+        if total_qty < min_sell_qty:
+            logger.info(
+                f"DCA Trailing Check [{self.ticker}] | Total Qty: {total_qty:.6f}/{min_sell_qty:.6f} "
+                f"(Below min_sell_qty={min_sell_qty}). Skipping trailing stop check."
+            )
             return
 
         average_buy_price = total_cost / total_qty

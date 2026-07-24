@@ -111,6 +111,8 @@ TOSS_ACCOUNT_SEQ=your_account_sequence_number
     "buy_amount": 20.0,
     "yield_target": 0.10,
     "max_session_buys": 40,
+    "min_session_buys": 6,
+    "min_sell_qty": 1.0,
     "trailing_drop_rate": 0.01,
     "enabled": true
   }
@@ -134,6 +136,8 @@ TOSS_ACCOUNT_SEQ=your_account_sequence_number
 * **`grid_interval`** (Float, GRID 전용): 그리드 매수 간격 비율. (예: `0.005` = 직전 체결가 대비 0.5% 하락 시 추가 매수)
 * **`enabled`** (Boolean): `true`일 때 거래가 정상 진행되며, `false`로 변경 시 신규 매수는 중단하고 기존 보유 수량의 매도(감시 및 실행)만 진행합니다.
 * **`max_session_buys`** (Integer, DCA 전용): 현재 DCA 세션에서 누적하여 매수할 수 있는 최대 횟수 $N$ (예: `40`).
+* **`min_session_buys`** (Integer, DCA 전용, Optional): 트레일링 스탑 감지 및 청산을 허용하기 위해 필요한 최소 누적 매수 횟수 (미설정 시 기본값 `6`).
+* **`min_sell_qty`** (Float, DCA 전용, Optional): 트레일링 스탑 감지 및 청산을 허용하기 위해 필요한 최소 누적 보유 수량 (미설정 시 기본값 `1.0`). 소수점 매도 불가능 제약을 방지합니다.
 * **`trailing_drop_rate`** (Float, DCA 전용): 트레일링 스톱 활성화 이후 최고가 대비 하락 시 전량 매도를 체결시킬 하락 감지 비율 (예: `0.01` = 최고가 대비 1% 하락 시 시장가 전량 매도).
 * **`max_consecutive_buys`** (Integer, GRID 전용, Optional): 매도 없이 연속으로 매수 가능한 최대 횟수. (해당 필드가 없거나 설정하지 않으면 쿨다운 장치가 비활성화되어 기존처럼 계속 매수합니다.)
 * **`cooldown_minutes`** (Integer, GRID 전용, Optional): 연속 매수 제한 횟수 도달 시, 매수 감지를 중단할 대기 시간 (분 단위).
