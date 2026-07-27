@@ -18,11 +18,17 @@ class GridStrategy(BaseStrategy):
         # Step 2: Reconcile Pending Buy Executions
         self._verify_buy_executions()
 
-        # Step 2.5: Check for Stop-Loss request
+        # Step 2.5: Check for Stop-Loss request (Regular market hours only)
         stop_loss_count = int(self.config.get("stop_loss_count", 0))
         if stop_loss_count > 0:
-            self._process_stop_loss(stop_loss_count, current_price)
-            return
+            if self.is_regular_market_hours():
+                self._process_stop_loss(stop_loss_count, current_price)
+                return
+            else:
+                logger.info(
+                    f"Instance [{self.instance_key}] - Stop loss requested (count={stop_loss_count}), "
+                    f"but outside regular market hours. Waiting for regular market session..."
+                )
         
         # If the ticker is disabled, block any new buys
         if not self.config.get("enabled", True):
