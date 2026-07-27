@@ -113,7 +113,9 @@ class GridStrategy(BaseStrategy):
     def _process_stop_loss(self, stop_loss_count: int, current_price: float):
         """
         Executes stop loss for the top N positions with the highest target sell price.
-        After selling, updates SQLite DB and sets stop_loss_count to 0 in config.
+        If an order fails to fill (e.g. price plunges rapidly), cancels the open exchange order,
+        preserves the remaining position, and decrements stop_loss_count only for filled sales
+        so unfilled stop losses are retried on the next tick at the updated market price.
         """
         logger.warning(f"Ticker [{self.ticker}] - Stop Loss Triggered! Requested count: {stop_loss_count}")
         
@@ -134,6 +136,7 @@ class GridStrategy(BaseStrategy):
         logger.info(f"Ticker [{self.ticker}] - Selected {len(target_sells)} top positions for stop loss.")
 
         buy_mode = self.config.get("buy_mode", "AMOUNT").upper()
+        successfully_filled_count = 0
 
         for order in target_sells:
             order_id = order.get("orderId")
@@ -156,6 +159,9 @@ class GridStrategy(BaseStrategy):
 
             # Execute market/limit sell for stop loss
             actual_sell_price = current_price
+            is_filled = False
+            new_exchange_id = ""
+            
             try:
                 if buy_mode == "AMOUNT":
                     sell_res = self.api_client.place_market_order(self.ticker, "SELL", qty)
@@ -168,26 +174,71 @@ class GridStrategy(BaseStrategy):
                         time.sleep(1.0)
                         try:
                             details = self.api_client.get_order_details(new_exchange_id)
-                            if details.get("status") == "FILLED":
+                            status = details.get("status")
+                            if status == "FILLED":
                                 filled_p = self._extract_filled_price(details)
                                 if filled_p:
                                     actual_sell_price = filled_p
+                                is_filled = True
                                 break
-                        except Exception:
-                            pass
+                            elif status in ["CANCELED", "REJECTED"]:
+                                logger.warning(f"  Stop loss order {new_exchange_id} status: {status}")
+                                break
+                        except Exception as poll_err:
+                            logger.error(f"  Error checking status for stop loss order {new_exchange_id}: {poll_err}")
             except Exception as order_err:
                 logger.error(f"  Error submitting stop loss sell order for {order_id}: {order_err}")
 
-            # Update DB (mark trade history COMPLETED and remove incomplete order)
-            self.db_manager.remove_incomplete_order(order_id, actual_sell_price)
-            self._reset_consecutive_buys()
-            if order_id in self.incomplete_orders:
-                del self.incomplete_orders[order_id]
-                
-            logger.info(f"  Stop Loss completed for order {order_id} at price {actual_sell_price:.2f}. DB updated.")
+            if is_filled:
+                # Update DB (mark trade history COMPLETED and remove incomplete order)
+                self.db_manager.remove_incomplete_order(order_id, actual_sell_price)
+                self._reset_consecutive_buys()
+                if order_id in self.incomplete_orders:
+                    del self.incomplete_orders[order_id]
+                successfully_filled_count += 1
+                logger.info(f"  Stop Loss completed for order {order_id} at price {actual_sell_price:.2f}. DB updated.")
+            else:
+                # If not filled (e.g. price plunged quickly and limit order remained open), cancel the order on exchange!
+                logger.warning(
+                    f"  Stop loss sell order for {order_id} (Exchange ID: {new_exchange_id}) was not filled within polling window. "
+                    f"Cancelling open exchange order so it can be retried on next tick at new market price..."
+                )
+                if new_exchange_id:
+                    try:
+                        self.api_client.cancel_order(new_exchange_id)
+                        check_details = self.api_client.get_order_details(new_exchange_id)
+                        if check_details.get("status") == "FILLED":
+                            filled_p = self._extract_filled_price(check_details)
+                            if filled_p:
+                                actual_sell_price = filled_p
+                            self.db_manager.remove_incomplete_order(order_id, actual_sell_price)
+                            self._reset_consecutive_buys()
+                            if order_id in self.incomplete_orders:
+                                del self.incomplete_orders[order_id]
+                            successfully_filled_count += 1
+                            logger.info(f"  Stop Loss order {new_exchange_id} filled right before cancel. DB updated.")
+                        else:
+                            execution = check_details.get("execution", {})
+                            filled_qty_str = execution.get("filledQuantity", "0")
+                            filled_qty = float(filled_qty_str) if filled_qty_str else 0.0
+                            if filled_qty > 0:
+                                remaining_qty = qty - filled_qty
+                                self.db_manager.update_incomplete_order_quantity(order_id, remaining_qty)
+                                order["quantity"] = str(remaining_qty)
+                                logger.info(f"  Partial fill detected ({filled_qty} shares) for {order_id}. Remaining: {remaining_qty}")
+                            self.db_manager.update_incomplete_order_exchange_id(order_id, "")
+                            order["exchangeOrderId"] = ""
+                    except Exception as cancel_retry_err:
+                        logger.error(f"  Failed to cancel unfilled stop loss order {new_exchange_id}: {cancel_retry_err}")
+                        self.db_manager.update_incomplete_order_exchange_id(order_id, "")
+                        order["exchangeOrderId"] = ""
 
-        # Reset stop_loss_count in config file and in-memory config to 0
-        update_stop_loss_count(self.instance_key, 0)
-        self.config["stop_loss_count"] = 0
-        logger.info(f"Ticker [{self.ticker}] - Stop Loss procedure completed. stop_loss_count reset to 0.")
+        # Remaining stop_loss_count to retry on next tick
+        remaining_count = max(0, stop_loss_count - successfully_filled_count)
+        update_stop_loss_count(self.instance_key, remaining_count)
+        self.config["stop_loss_count"] = remaining_count
+        logger.info(
+            f"Ticker [{self.ticker}] - Stop Loss step completed. "
+            f"Filled: {successfully_filled_count}/{len(target_sells)}. Remaining stop_loss_count: {remaining_count}."
+        )
 
