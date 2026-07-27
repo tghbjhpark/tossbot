@@ -67,7 +67,8 @@ def parse_ticker_item(item: dict) -> dict:
         "max_session_buys": int(item.get("max_session_buys", 40)),
         "min_session_buys": int(item.get("min_session_buys", 6)),
         "min_sell_qty": float(item.get("min_sell_qty", 1.0)),
-        "trailing_drop_rate": float(item.get("trailing_drop_rate", 0.01))
+        "trailing_drop_rate": float(item.get("trailing_drop_rate", 0.01)),
+        "stop_loss_count": int(item.get("stop_loss_count", 0)) if item.get("stop_loss_count") is not None else 0
     }
 
 # Load config from ticker.json
@@ -162,13 +163,39 @@ def reload_config_if_changed() -> bool:
     except Exception as e:
         logger.error(f"Error during dynamic config reload: {e}")
         return False
-        logger.info(f"Dynamically reloaded configurations. Active Tickers: {TICKERS}")
-        return True
-    except Exception as e:
-        logger.error(f"Error during dynamic config reload: {e}")
-        return False
+
+def update_stop_loss_count(ticker: str, count: int = 0):
+    """
+    Updates stop_loss_count for ticker in TICKER_CONFIGS and persists to TICKER_JSON_PATH.
+    """
+    t_key = ticker.upper().strip()
+    if t_key in TICKER_CONFIGS:
+        TICKER_CONFIGS[t_key]["stop_loss_count"] = count
+        
+    if os.path.exists(TICKER_JSON_PATH):
+        try:
+            with open(TICKER_JSON_PATH, "r", encoding="utf-8") as f:
+                configs = json.load(f)
+            
+            is_list = isinstance(configs, list)
+            items = configs if is_list else list(configs.values())
+            
+            for item in items:
+                if item.get("ticker", "").upper().strip() == t_key:
+                    item["stop_loss_count"] = count
+                    break
+                    
+            with open(TICKER_JSON_PATH, "w", encoding="utf-8") as f:
+                json.dump(configs, f, indent=2, ensure_ascii=False)
+            
+            global _last_mtime
+            _last_mtime = os.path.getmtime(TICKER_JSON_PATH)
+            logger.info(f"Updated stop_loss_count for [{t_key}] to {count} in {TICKER_JSON_PATH}")
+        except Exception as e:
+            logger.error(f"Failed to update stop_loss_count in {TICKER_JSON_PATH}: {e}")
 
 logger.info(
     f"Configuration Loaded: TICKERS={TICKERS}, TICKER_CONFIGS={TICKER_CONFIGS}, "
     f"POLLING_INTERVAL={POLLING_INTERVAL}s"
 )
+
