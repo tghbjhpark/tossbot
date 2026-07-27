@@ -113,7 +113,7 @@ class GridStrategy(BaseStrategy):
         
         if not self.incomplete_orders:
             logger.warning(f"Ticker [{self.ticker}] - No active sell positions available for stop loss.")
-            update_stop_loss_count(self.ticker, 0)
+            update_stop_loss_count(self.instance_key, 0)
             self.config["stop_loss_count"] = 0
             return
 
@@ -181,7 +181,7 @@ class GridStrategy(BaseStrategy):
             logger.info(f"  Stop Loss completed for order {order_id} at price {actual_sell_price:.2f}. DB updated.")
 
         # Reset stop_loss_count in config file and in-memory config to 0
-        update_stop_loss_count(self.ticker, 0)
+        update_stop_loss_count(self.instance_key, 0)
         self.config["stop_loss_count"] = 0
         logger.info(f"Ticker [{self.ticker}] - Stop Loss procedure completed. stop_loss_count reset to 0.")
 

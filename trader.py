@@ -24,33 +24,35 @@ class TradeBot:
 
     def initialize_strategies(self):
         """
-        Instantiates/updates Strategy objects for all configured tickers.
+        Instantiates/updates Strategy objects for all configured instances.
         Preserves existing in-memory cooldown or order caches if possible.
         """
         old_strategies = self.strategies
         self.strategies = {}
         
-        for ticker, config in TICKER_CONFIGS.items():
+        for instance_key, config in TICKER_CONFIGS.items():
+            ticker = config.get("ticker")
             strategy_name = config.get("strategy", "GRID")
             strategy_class = get_strategy_class(strategy_name)
             
             strategy_instance = strategy_class(ticker, self.api_client, self.db_manager, config)
+            strategy_instance.instance_key = instance_key
             
             # Carry over active states to prevent losing caches/cooldowns during hot-reload
-            if ticker in old_strategies:
-                strategy_instance.cooldown_state = old_strategies[ticker].cooldown_state
-                strategy_instance.incomplete_orders = old_strategies[ticker].incomplete_orders
-                strategy_instance.pending_buy_orders = old_strategies[ticker].pending_buy_orders
+            if instance_key in old_strategies:
+                strategy_instance.cooldown_state = old_strategies[instance_key].cooldown_state
+                strategy_instance.incomplete_orders = old_strategies[instance_key].incomplete_orders
+                strategy_instance.pending_buy_orders = old_strategies[instance_key].pending_buy_orders
                 
-            self.strategies[ticker] = strategy_instance
+            self.strategies[instance_key] = strategy_instance
             
-        logger.info(f"Initialized strategies: {list(self.strategies.keys())}")
+        logger.info(f"Initialized strategy instances: {list(self.strategies.keys())}")
 
     def initialize_state(self):
         """
         Loads active order caches from SQLite and distributes them to matching strategy instances.
         """
-        logger.info("Initializing in-memory state from SQLite for strategies...")
+        logger.info("Initializing in-memory state from SQLite for strategy instances...")
         
         # Load GRID data
         raw_grid_incomplete = self.db_manager.get_incomplete_orders()
@@ -60,8 +62,10 @@ class TradeBot:
         raw_dca_incomplete = self.db_manager.get_dca_incomplete_orders()
         raw_dca_pending = self.db_manager.get_dca_pending_buy_orders()
         
-        for ticker, strategy in self.strategies.items():
+        for instance_key, strategy in self.strategies.items():
             strategy_name = strategy.config.get("strategy", "GRID").upper()
+            ticker = strategy.ticker
+            
             if strategy_name == "DCA":
                 strategy.incomplete_orders = {
                     oid: order for oid, order in raw_dca_incomplete.items() if order.get("symbol") == ticker
@@ -78,15 +82,11 @@ class TradeBot:
                 }
             strategy.initialize_state()
 
-    def is_market_active_for_ticker(self, ticker: str) -> bool:
+    def is_market_active_for_strategy(self, strategy) -> bool:
         """
-        Checks if the trading session is active for the given ticker,
+        Checks if the trading session is active for the given strategy instance,
         distinguishing between US and Korean stock markets.
         """
-        strategy = self.strategies.get(ticker)
-        if not strategy:
-            return False
-            
         config = strategy.config
         market = config.get("market", "US").upper()
         
@@ -121,24 +121,33 @@ class TradeBot:
                 # 일반 수량 주문 (QTY): 평일 상시 작동 (시간 제한 없음)
                 return True
 
+    def is_market_active_for_ticker(self, ticker: str) -> bool:
+        """
+        Backward compatibility helper for ticker checking.
+        """
+        matching_strats = [s for s in self.strategies.values() if s.ticker == ticker]
+        if not matching_strats:
+            return False
+        return any(self.is_market_active_for_strategy(s) for s in matching_strats)
+
     def run_one_iteration(self):
         """
-        Executes one iteration of trading logic for all active tickers.
+        Executes one iteration of trading logic for all active strategy instances.
         """
         try:
             if reload_config_if_changed():
                 self.initialize_strategies()
                 self.initialize_state()
 
-            # Filter tickers that have active market sessions
-            active_tickers = [
-                t for t in TICKERS 
-                if self.is_market_active_for_ticker(t)
+            # Filter strategy instances that have active market sessions
+            active_keys = [
+                key for key, strat in self.strategies.items() 
+                if self.is_market_active_for_strategy(strat)
             ]
             
-            # Segregate enabled tickers and disabled (sell-only) tickers
-            enabled_tickers = [t for t in active_tickers if self.strategies[t].config.get("enabled", True)]
-            sell_only_tickers = [t for t in active_tickers if not self.strategies[t].config.get("enabled", True)]
+            # Segregate enabled and disabled (sell-only) instances
+            enabled_keys = [k for k in active_keys if self.strategies[k].config.get("enabled", True)]
+            sell_only_keys = [k for k in active_keys if not self.strategies[k].config.get("enabled", True)]
             
             # Log current times for user convenience
             tz_est = pytz.timezone("America/New_York")
@@ -148,29 +157,31 @@ class TradeBot:
             logger.info(
                 f"Market Check Tick | New York Time: {now_est.strftime('%Y-%m-%d %H:%M:%S %Z')} | "
                 f"Korea Time: {now_kst.strftime('%Y-%m-%d %H:%M:%S %Z')} | "
-                f"Active Tickers (Enabled): {enabled_tickers} | Active Tickers (Sell-only): {sell_only_tickers}"
+                f"Active Instances (Enabled): {enabled_keys} | Active Instances (Sell-only): {sell_only_keys}"
             )
             
-            if not active_tickers:
-                logger.info("No active market sessions for any configured tickers right now.")
+            if not active_keys:
+                logger.info("No active market sessions for any configured strategies right now.")
                 return
- 
-            logger.info("Starting batch trading iteration for active tickers...")
+
+            # Collect unique ticker symbols from active instances to query prices efficiently in batch
+            unique_active_tickers = list(set(self.strategies[k].ticker for k in active_keys))
+            logger.info(f"Starting batch trading iteration for unique tickers: {unique_active_tickers}")
             
-            # Fetch prices for active tickers in a single HTTP batch query
-            prices = self.api_client.get_current_prices(active_tickers)
+            prices = self.api_client.get_current_prices(unique_active_tickers)
             
-            # Run strategy sequentially for each active ticker
-            for ticker in active_tickers:
-                price = prices.get(ticker)
+            # Run each active strategy instance sequentially
+            for key in active_keys:
+                strategy = self.strategies[key]
+                price = prices.get(strategy.ticker)
                 if price is None:
-                    logger.warning(f"Skipping ticker [{ticker}] - Live market price is unavailable.")
+                    logger.warning(f"Skipping instance [{key}] - Live market price is unavailable for ticker [{strategy.ticker}].")
                     continue
                     
-                strategy_name = self.strategies[ticker].config.get("strategy", "GRID")
-                logger.info(f"Processing Strategy [{strategy_name}] | Ticker: {ticker} | Live Price: {price:.2f}")
+                strategy_name = strategy.config.get("strategy", "GRID")
+                logger.info(f"Processing Strategy [{strategy_name}] | Instance: {key} | Ticker: {strategy.ticker} | Live Price: {price:.2f}")
                 
-                self.strategies[ticker].evaluate(price)
+                strategy.evaluate(price)
                 
             logger.info("Completed batch trading iteration.")
             

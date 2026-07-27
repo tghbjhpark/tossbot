@@ -50,10 +50,18 @@ def parse_ticker_item(item: dict) -> dict:
     ticker = item.get("ticker", "").upper().strip()
     if not ticker:
         return {}
+    strategy = item.get("strategy", "GRID").upper().strip()
+    custom_id = item.get("id") or item.get("name")
+    if custom_id:
+        instance_key = str(custom_id).strip()
+    else:
+        instance_key = f"{ticker}:{strategy}"
+
     market = item.get("market", "KR" if ticker.isdigit() else "US").upper()
     return {
+        "instance_key": instance_key,
         "ticker": ticker,
-        "strategy": item.get("strategy", "GRID").upper().strip(),
+        "strategy": strategy,
         "market": market,
         "buy_mode": item.get("buy_mode", "QTY" if market == "KR" else "AMOUNT").upper(),
         "buy_qty": int(item.get("buy_qty", 1)),
@@ -71,18 +79,31 @@ def parse_ticker_item(item: dict) -> dict:
         "stop_loss_count": int(item.get("stop_loss_count", 0)) if item.get("stop_loss_count") is not None else 0
     }
 
+def _build_configs_dict(items: list) -> dict:
+    new_configs = {}
+    for item in items:
+        parsed = parse_ticker_item(item)
+        if not parsed:
+            continue
+        base_key = parsed["instance_key"]
+        key = base_key
+        idx = 1
+        while key in new_configs:
+            idx += 1
+            key = f"{base_key}:{idx}"
+        parsed["instance_key"] = key
+        new_configs[key] = parsed
+    return new_configs
+
 # Load config from ticker.json
 if os.path.exists(TICKER_JSON_PATH):
     try:
         with open(TICKER_JSON_PATH, "r", encoding="utf-8") as f:
             configs = json.load(f)
-            items = configs if isinstance(configs, list) else configs.values()
-            for item in items:
-                parsed = parse_ticker_item(item)
-                if parsed:
-                    TICKER_CONFIGS[parsed["ticker"]] = parsed
-        TICKERS = list(TICKER_CONFIGS.keys())
-        logger.info(f"Loaded {len(TICKERS)} ticker configurations from {TICKER_JSON_PATH}.")
+            items = configs if isinstance(configs, list) else list(configs.values())
+            TICKER_CONFIGS = _build_configs_dict(items)
+        TICKERS = sorted(list(set(cfg["ticker"] for cfg in TICKER_CONFIGS.values())))
+        logger.info(f"Loaded {len(TICKER_CONFIGS)} strategy configurations for {len(TICKERS)} unique tickers from {TICKER_JSON_PATH}.")
     except Exception as e:
         logger.error(f"Error loading {TICKER_JSON_PATH}: {e}. Falling back to environment variables.")
 
@@ -104,9 +125,8 @@ if not TICKER_CONFIGS:
             "enabled": True
         }
         default_configs.append(config_item)
-        TICKER_CONFIGS[ticker] = parse_ticker_item(config_item)
-    
-    TICKERS = list(TICKER_CONFIGS.keys())
+    TICKER_CONFIGS = _build_configs_dict(default_configs)
+    TICKERS = sorted(list(set(cfg["ticker"] for cfg in TICKER_CONFIGS.values())))
     try:
         with open(TICKER_JSON_PATH, "w", encoding="utf-8") as f:
             json.dump(default_configs, f, indent=2, ensure_ascii=False)
@@ -142,35 +162,43 @@ def reload_config_if_changed() -> bool:
         with open(TICKER_JSON_PATH, "r", encoding="utf-8") as f:
             configs = json.load(f)
             
-        new_configs = {}
-        items = configs if isinstance(configs, list) else configs.values()
-        
-        for item in items:
-            parsed = parse_ticker_item(item)
-            if parsed:
-                new_configs[parsed["ticker"]] = parsed
+        items = configs if isinstance(configs, list) else list(configs.values())
+        new_configs = _build_configs_dict(items)
             
         # 전역 객체 동적 업데이트 (참조 유지를 위해 clear 후 update)
         TICKER_CONFIGS.clear()
         TICKER_CONFIGS.update(new_configs)
         
         TICKERS.clear()
-        TICKERS.extend(list(TICKER_CONFIGS.keys()))
+        TICKERS.extend(sorted(list(set(cfg["ticker"] for cfg in TICKER_CONFIGS.values()))))
         
         _last_mtime = current_mtime
-        logger.info(f"Dynamically reloaded configurations. Active Tickers: {TICKERS}")
+        logger.info(f"Dynamically reloaded configurations. Active Instances: {list(TICKER_CONFIGS.keys())}, Unique Tickers: {TICKERS}")
         return True
     except Exception as e:
         logger.error(f"Error during dynamic config reload: {e}")
         return False
 
-def update_stop_loss_count(ticker: str, count: int = 0):
+def update_stop_loss_count(key_or_ticker: str, count: int = 0):
     """
-    Updates stop_loss_count for ticker in TICKER_CONFIGS and persists to TICKER_JSON_PATH.
+    Updates stop_loss_count for instance_key or ticker in TICKER_CONFIGS and persists to TICKER_JSON_PATH.
     """
-    t_key = ticker.upper().strip()
-    if t_key in TICKER_CONFIGS:
-        TICKER_CONFIGS[t_key]["stop_loss_count"] = count
+    target_key = key_or_ticker.strip()
+    matching_ticker = ""
+    matching_strategy = ""
+    
+    if target_key in TICKER_CONFIGS:
+        TICKER_CONFIGS[target_key]["stop_loss_count"] = count
+        matching_ticker = TICKER_CONFIGS[target_key]["ticker"]
+        matching_strategy = TICKER_CONFIGS[target_key]["strategy"]
+    else:
+        # Search by ticker symbol
+        for ik, cfg in TICKER_CONFIGS.items():
+            if cfg["ticker"] == target_key.upper() or ik == target_key:
+                cfg["stop_loss_count"] = count
+                matching_ticker = cfg["ticker"]
+                matching_strategy = cfg["strategy"]
+                break
         
     if os.path.exists(TICKER_JSON_PATH):
         try:
@@ -181,7 +209,17 @@ def update_stop_loss_count(ticker: str, count: int = 0):
             items = configs if is_list else list(configs.values())
             
             for item in items:
-                if item.get("ticker", "").upper().strip() == t_key:
+                item_ticker = item.get("ticker", "").upper().strip()
+                item_strategy = item.get("strategy", "GRID").upper().strip()
+                item_id = item.get("id") or item.get("name")
+                
+                if item_id and str(item_id).strip() == target_key:
+                    item["stop_loss_count"] = count
+                    break
+                elif matching_ticker and item_ticker == matching_ticker and item_strategy == matching_strategy:
+                    item["stop_loss_count"] = count
+                    break
+                elif item_ticker == target_key.upper():
                     item["stop_loss_count"] = count
                     break
                     
@@ -190,7 +228,7 @@ def update_stop_loss_count(ticker: str, count: int = 0):
             
             global _last_mtime
             _last_mtime = os.path.getmtime(TICKER_JSON_PATH)
-            logger.info(f"Updated stop_loss_count for [{t_key}] to {count} in {TICKER_JSON_PATH}")
+            logger.info(f"Updated stop_loss_count for [{target_key}] to {count} in {TICKER_JSON_PATH}")
         except Exception as e:
             logger.error(f"Failed to update stop_loss_count in {TICKER_JSON_PATH}: {e}")
 

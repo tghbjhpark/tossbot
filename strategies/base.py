@@ -17,6 +17,7 @@ class BaseStrategy:
         self.api_client = api_client
         self.db_manager = db_manager
         self.config = config
+        self.instance_key = config.get("instance_key", f"{ticker}:{config.get('strategy', 'GRID')}")
         
         # Memory caches (keyed by order_id)
         self.incomplete_orders = {}
@@ -29,7 +30,7 @@ class BaseStrategy:
         """
         Displays initial state diagnostics at startup.
         """
-        logger.info(f"Ticker [{self.ticker}] | Active Sells: {len(self.incomplete_orders)} | Pending Buys: {len(self.pending_buy_orders)}")
+        logger.info(f"Instance [{self.instance_key}] | Ticker [{self.ticker}] | Active Sells: {len(self.incomplete_orders)} | Pending Buys: {len(self.pending_buy_orders)}")
         for oid, order in self.incomplete_orders.items():
             order_type = "Synthetic Sell" if order.get("isSynthetic") else "Limit Sell"
             logger.info(
