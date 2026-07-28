@@ -34,5 +34,22 @@
     "yield_target": 0.01,
     "grid_interval": 0.003,
     "enabled": true
+  },
+  {
+    "ticker": "SOXL",
+    "strategy": "VR",
+    "mode": "ACCUMULATE",
+    "market": "US",
+    "buy_mode": "AMOUNT",
+    "v_target": 500.0,
+    "pocket_cash": 500.0,
+    "band_rate": 0.15,
+    "cycle_deposit": 100.0,
+    "g_factor": 10.0,
+    "cycle_growth_rate": 0.0025,
+    "cycle_days": 10,
+    "min_trade_amount": 10.0,
+    "rebalance_hour_us": 11,
+    "enabled": true
   }
 ]

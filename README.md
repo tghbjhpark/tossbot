@@ -125,7 +125,19 @@ TOSS_ACCOUNT_SEQ=your_account_sequence_number
 * **`strategy`** (String, Optional): 해당 종목에 적용할 매매 전략.
   - `GRID`: 그리드 분할 매수 및 개별 대응 매도 대기 전략 (기본값).
   - `DCA`: 라오어 무한매수법 응용 전략. 고정 시간 분할 매수 및 트레일링 스톱 전량 청산 전략.
+  - `VR`: 라오어 밸류 리밸런싱(Value Rebalancing) 전략. 밸류 목표액($V$) 및 현금 Pocket 동적 리밸런싱 전략.
 * **`market`** (String): `US` (미국 주식) 또는 `KR` (한국 주식).
+* **`mode`** (String, VR 전용): `ACCUMULATE` (적립식), `LUMP_SUM` (거치식), `WITHDRAWAL` (인출식).
+* **`v_target`** (Float, VR 전용): 초기 주식 평가금액 목표액 ($V$).
+* **`pocket_cash`** (Float, VR 전용): 초기 매수 대기 현금 잔고 ($Pocket$).
+* **`band_rate`** (Float, VR 전용): 밸류 밴드 비율 (기본값 `0.15` = 15%). $V_{max} = V \times (1 + p)$, $V_{min} = \frac{V}{1 + p}$.
+* **`cycle_deposit`** (Float, VR 전용): 2주 주기마다 추가로 적립되는 현금 및 $V$ 증액 금액 (`ACCUMULATE` 모드용).
+* **`cycle_withdrawal`** (Float, VR 전용): 2주 주기마다 인출되는 현금 및 $V$ 차감 금액 (`WITHDRAWAL` 모드용).
+* **`g_factor`** (Float, VR 전용): 밸류 목표가($V$) 상승 기울기 조절 계수 (기본값 `10.0`). $V_{next} = V_{old} + \frac{Pocket}{G} + deposit - withdrawal$.
+* **`cycle_growth_rate`** (Float, VR 전용): `g_factor` 미사용 시 백업용 주기별 복리 목표 성장률 (기본값 `0.0025` = 0.25%).
+* **`cycle_days`** (Integer, VR 전용): 리밸런싱 주기 거래일 수 (기본값 `10` 거래일 = 2주).
+* **`min_trade_amount`** (Float, VR 전용): 과도한 잦은 매매 및 수수료 낭비를 방지하기 위한 최소 거래 허들 금액 (기본값 `$10.0`).
+* **`rebalance_hour_us`** (Integer, VR 전용): 하루 1회 감시 및 리밸런싱을 실행할 미국 뉴욕 시간 시각 (기본값 `11` = 11:00 AM EST/EDT).
 * **`buy_mode`** (String): 
   - `QTY` (수량 지정 매수): 정수 수량 기준으로 매수 주문 제출.
   - `AMOUNT` (금액 지정 매수): 소수점 금액 주문 형태로 매수 주문 제출. (미국 소수점 거래 및 국내 소수점 거래용)
@@ -138,7 +150,7 @@ TOSS_ACCOUNT_SEQ=your_account_sequence_number
 * **`enabled`** (Boolean): `true`일 때 거래가 정상 진행되며, `false`로 변경 시 신규 매수는 중단하고 기존 보유 수량의 매도(감시 및 실행)만 진행합니다.
 * **`max_session_buys`** (Integer, DCA 전용): 현재 DCA 세션에서 누적하여 매수할 수 있는 최대 횟수 $N$ (예: `40`).
 * **`min_session_buys`** (Integer, DCA 전용, Optional): 트레일링 스탑 감지 및 청산을 허용하기 위해 필요한 최소 누적 매수 횟수 (미설정 시 기본값 `6`).
-* **`min_sell_qty`** (Float, DCA 전용, Optional): 트레일링 스탑 감지 및 청산을 허용하기 위해 필요한 최소 누적 보유 수량 (미설정 시 기본값 `1.0`). 소수점 매도 불가능 제약을 방지합니다.
+* **`min_sell_qty`** (Float, DCA/VR 전용, Optional): 매도 실행을 허용하기 위한 최소 보유/매도 수량.
 * **`trailing_drop_rate`** (Float, DCA 전용): 트레일링 스톱 활성화 이후 최고가 대비 하락 시 전량 매도를 체결시킬 하락 감지 비율 (예: `0.01` = 최고가 대비 1% 하락 시 시장가 전량 매도).
 * **`max_consecutive_buys`** (Integer, GRID 전용, Optional): 매도 없이 연속으로 매수 가능한 최대 횟수. (해당 필드가 없거나 설정하지 않으면 쿨다운 장치가 비활성화되어 기존처럼 계속 매수합니다.)
 * **`cooldown_minutes`** (Integer, GRID 전용, Optional): 연속 매수 제한 횟수 도달 시, 매수 감지를 중단할 대기 시간 (분 단위).

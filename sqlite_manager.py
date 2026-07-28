@@ -133,6 +133,59 @@ class SQLiteManager:
                     status TEXT NOT NULL
                 )
             """)
+
+            # === VR (Value Rebalancing) Tables ===
+            # 8. Table for VR pending buy orders
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vr_pending_buy_orders (
+                    order_id TEXT PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL NOT NULL,
+                    ordered_at TEXT NOT NULL,
+                    is_amount_based INTEGER DEFAULT 0,
+                    order_amount REAL DEFAULT 0.0
+                )
+            """)
+
+            # 9. Table for VR executed buys (holdings)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vr_incomplete_orders (
+                    order_id TEXT PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    quantity REAL NOT NULL,
+                    ordered_at TEXT NOT NULL
+                )
+            """)
+
+            # 10. Table for VR session state
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vr_session_state (
+                    symbol TEXT PRIMARY KEY,
+                    v_target REAL NOT NULL DEFAULT 0.0,
+                    pocket_cash REAL NOT NULL DEFAULT 0.0,
+                    cycle_count INTEGER DEFAULT 1,
+                    last_cycle_date TEXT,
+                    last_rebalance_date TEXT
+                )
+            """)
+
+            # 11. Table for VR completed trades history
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vr_trades_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sell_order_id TEXT,
+                    symbol TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    buy_price REAL NOT NULL,
+                    buy_time TEXT,
+                    sell_price REAL,
+                    sell_time TEXT,
+                    profit REAL,
+                    status TEXT NOT NULL
+                )
+            """)
             
             conn.commit()
             conn.close()
@@ -661,3 +714,231 @@ class SQLiteManager:
         except Exception as e:
             logger.error(f"Error adding DCA trade history for {symbol}: {e}")
             return False
+
+    # === VR (Value Rebalancing) Helper Methods ===
+    def get_vr_incomplete_orders(self) -> dict:
+        if not self._initialized:
+            return {}
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM vr_incomplete_orders")
+            rows = cursor.fetchall()
+            conn.close()
+            orders = {}
+            for row in rows:
+                oid = row["order_id"]
+                orders[oid] = {
+                    "orderId": oid,
+                    "symbol": row["symbol"],
+                    "price": str(row["price"]),
+                    "quantity": str(row["quantity"]),
+                    "orderedAt": row["ordered_at"]
+                }
+            return orders
+        except Exception as e:
+            logger.error(f"Error fetching VR incomplete orders: {e}")
+            return {}
+
+    def add_vr_incomplete_order(self, order_id: str, order_data: dict) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO vr_incomplete_orders (order_id, symbol, price, quantity, ordered_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    order_id,
+                    order_data.get("symbol"),
+                    float(order_data.get("price", 0.0)),
+                    float(order_data.get("quantity", 0.0)),
+                    order_data.get("orderedAt", datetime.now().isoformat())
+                )
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully added VR incomplete order {order_id} to SQLite.")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding VR incomplete order {order_id}: {e}")
+            return False
+
+    def remove_vr_incomplete_order(self, order_id: str) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM vr_incomplete_orders WHERE order_id = ?", (order_id,))
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully removed VR incomplete order {order_id} from SQLite.")
+            return True
+        except Exception as e:
+            logger.error(f"Error removing VR incomplete order {order_id}: {e}")
+            return False
+
+    def get_vr_pending_buy_orders(self) -> dict:
+        if not self._initialized:
+            return {}
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM vr_pending_buy_orders")
+            rows = cursor.fetchall()
+            conn.close()
+            orders = {}
+            for row in rows:
+                oid = row["order_id"]
+                orders[oid] = {
+                    "orderId": oid,
+                    "symbol": row["symbol"],
+                    "quantity": float(row["quantity"]),
+                    "price": float(row["price"]),
+                    "orderedAt": row["ordered_at"],
+                    "isAmountBased": bool(row["is_amount_based"]),
+                    "orderAmount": float(row["order_amount"])
+                }
+            return orders
+        except Exception as e:
+            logger.error(f"Error fetching VR pending buy orders: {e}")
+            return {}
+
+    def add_vr_pending_buy_order(self, order_id: str, symbol: str, quantity: float, price: float, is_amount_based: bool = False, order_amount: float = 0.0) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO vr_pending_buy_orders (order_id, symbol, quantity, price, ordered_at, is_amount_based, order_amount)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (order_id, symbol, quantity, price, datetime.now().isoformat(), 1 if is_amount_based else 0, order_amount)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully added VR pending buy order {order_id} for {symbol} to SQLite.")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding VR pending buy order {order_id}: {e}")
+            return False
+
+    def remove_vr_pending_buy_order(self, order_id: str) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM vr_pending_buy_orders WHERE order_id = ?", (order_id,))
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully removed VR pending buy order {order_id} from SQLite.")
+            return True
+        except Exception as e:
+            logger.error(f"Error removing VR pending buy order {order_id}: {e}")
+            return False
+
+    def get_vr_session_state(self, symbol: str) -> dict:
+        if not self._initialized:
+            return {}
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM vr_session_state WHERE symbol = ?", (symbol,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return {
+                    "symbol": row["symbol"],
+                    "v_target": float(row["v_target"]),
+                    "pocket_cash": float(row["pocket_cash"]),
+                    "cycle_count": int(row["cycle_count"]),
+                    "last_cycle_date": row["last_cycle_date"],
+                    "last_rebalance_date": row["last_rebalance_date"]
+                }
+            return {}
+        except Exception as e:
+            logger.error(f"Error fetching VR session state for {symbol}: {e}")
+            return {}
+
+    def save_vr_session_state(self, symbol: str, v_target: float, pocket_cash: float, cycle_count: int = 1, last_cycle_date: str = None, last_rebalance_date: str = None) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO vr_session_state (symbol, v_target, pocket_cash, cycle_count, last_cycle_date, last_rebalance_date)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (symbol, v_target, pocket_cash, cycle_count, last_cycle_date, last_rebalance_date)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully saved VR session state for {symbol}: V={v_target:.2f}, Pocket={pocket_cash:.2f}, Cycle={cycle_count}")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving VR session state for {symbol}: {e}")
+            return False
+
+    def add_vr_trade_history(self, symbol: str, quantity: float, buy_price: float, sell_price: float, profit: float, sell_order_id: str) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO vr_trades_history 
+                (sell_order_id, symbol, quantity, buy_price, buy_time, sell_price, sell_time, profit, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sell_order_id,
+                    symbol,
+                    quantity,
+                    buy_price,
+                    datetime.now().isoformat(),
+                    sell_price,
+                    datetime.now().isoformat(),
+                    profit,
+                    "FILLED"
+                )
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully saved VR trade history for {symbol}. Profit: {profit:.4f}")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding VR trade history for {symbol}: {e}")
+            return False
+
+    def clear_vr_session_state(self, symbol: str) -> bool:
+        """
+        Clears/resets the VR session state and orders for a specific symbol.
+        """
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM vr_session_state WHERE symbol = ?", (symbol,))
+            cursor.execute("DELETE FROM vr_pending_buy_orders WHERE symbol = ?", (symbol,))
+            cursor.execute("DELETE FROM vr_incomplete_orders WHERE symbol = ?", (symbol,))
+            cursor.execute("DELETE FROM vr_trades_history WHERE symbol = ?", (symbol,))
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully cleared VR session state and orders for {symbol}.")
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing VR session state for {symbol}: {e}")
+            return False
+
+

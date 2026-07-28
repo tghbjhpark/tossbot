@@ -76,7 +76,18 @@ def parse_ticker_item(item: dict) -> dict:
         "min_session_buys": int(item.get("min_session_buys", 6)),
         "min_sell_qty": float(item.get("min_sell_qty", 1.0)),
         "trailing_drop_rate": float(item.get("trailing_drop_rate", 0.01)),
-        "stop_loss_count": int(item.get("stop_loss_count", 0)) if item.get("stop_loss_count") is not None else 0
+        "stop_loss_count": int(item.get("stop_loss_count", 0)) if item.get("stop_loss_count") is not None else 0,
+        "mode": item.get("mode", "ACCUMULATE").upper().strip(),
+        "v_target": float(item["v_target"]) if item.get("v_target") is not None else None,
+        "pocket_cash": float(item["pocket_cash"]) if item.get("pocket_cash") is not None else None,
+        "band_rate": float(item.get("band_rate", 0.15)),
+        "cycle_deposit": float(item.get("cycle_deposit", 0.0)),
+        "cycle_withdrawal": float(item.get("cycle_withdrawal", 0.0)),
+        "cycle_growth_rate": float(item.get("cycle_growth_rate", 0.0025)),
+        "g_factor": float(item.get("g_factor", 10.0)) if item.get("g_factor") is not None else 10.0,
+        "cycle_days": int(item.get("cycle_days", 10)),
+        "min_trade_amount": float(item.get("min_trade_amount", 10.0)),
+        "rebalance_hour_us": int(item.get("rebalance_hour_us") or item.get("rebalance_hour") or 11)
     }
 
 def _build_configs_dict(items: list) -> dict:

@@ -52,6 +52,32 @@ class BaseStrategy:
             end_time = now_est.replace(hour=16, minute=0, second=0, microsecond=0)
             return start_time <= now_est <= end_time
 
+    def is_fractional_trading_hours(self) -> bool:
+        """
+        Checks if current time is within Toss Securities fractional share trading hours:
+        - Toss OpenAPI fractional orders are allowed up to 1 hour before market close!
+        - KR Market: Monday-Friday, 09:00 AM to 02:20 PM KST (1 hour before 15:20 KST)
+        - US Market: Monday-Friday, 09:30 AM to 03:00 PM EST (1 hour before 16:00 EST / New York time)
+        """
+        market = self.config.get("market", "US").upper()
+        
+        if market == "KR":
+            tz_kst = pytz.timezone("Asia/Seoul")
+            now_kst = datetime.now(tz_kst)
+            if now_kst.weekday() >= 5:
+                return False
+            start_time = now_kst.replace(hour=9, minute=0, second=0, microsecond=0)
+            end_time = now_kst.replace(hour=14, minute=20, second=0, microsecond=0)
+            return start_time <= now_kst <= end_time
+        else:
+            tz_est = pytz.timezone("America/New_York")
+            now_est = datetime.now(tz_est)
+            if now_est.weekday() >= 5:
+                return False
+            start_time = now_est.replace(hour=9, minute=30, second=0, microsecond=0)
+            end_time = now_est.replace(hour=15, minute=0, second=0, microsecond=0)
+            return start_time <= now_est <= end_time
+
     def initialize_state(self):
         """
         Displays initial state diagnostics at startup.
