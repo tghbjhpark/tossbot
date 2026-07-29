@@ -188,8 +188,13 @@ class VrStrategy(BaseStrategy):
                 sell_qty = excess_amount / current_price
                 if sell_qty > total_qty:
                     sell_qty = total_qty
-                logger.info(f"VR [{self.ticker}] - Overvaluation detected (E=${valuation:.2f} > V_max=${v_max:.2f}). Selling {sell_qty:.4f} shares...")
-                self._execute_vr_sell(current_price, sell_qty, excess_amount)
+                
+                min_sell_qty = float(self.config.get("min_sell_qty", 1.0))
+                if sell_qty >= min_sell_qty:
+                    logger.info(f"VR [{self.ticker}] - Overvaluation detected (E=${valuation:.2f} > V_max=${v_max:.2f}). Selling {sell_qty:.4f} shares...")
+                    self._execute_vr_sell(current_price, sell_qty, excess_amount)
+                else:
+                    logger.info(f"VR [{self.ticker}] - Overvaluation detected (E=${valuation:.2f} > V_max=${v_max:.2f}) but calculated sell qty ({sell_qty:.4f}) is less than {min_sell_qty} share. Skipping sell.")
         elif valuation < v_min:
             # Undervaluation (Breached Lower Band) -> Rebalance Buy
             deficit_amount = self.v_target - valuation
@@ -201,23 +206,8 @@ class VrStrategy(BaseStrategy):
             elif self.pocket_cash < min_trade_amount:
                 logger.warning(f"VR [{self.ticker}] - Undervaluation detected but Pocket Cash is depleted (${self.pocket_cash:.2f} < ${min_trade_amount:.2f}). Holding.")
         else:
-            # Within Band (V_min <= E <= V_max) -> Gradient Rebalancing
-            p_buy = v_max / (total_qty + 1.0) if (total_qty + 1.0) > 0 else current_price
-            p_sell = v_min / (total_qty - 1.0) if (total_qty - 1.0) > 0 else current_price * 2.0
-
-            if current_price <= p_buy:
-                buy_amount = min(self.v_target - valuation, self.pocket_cash)
-                if buy_amount >= min_trade_amount:
-                    logger.info(f"VR [{self.ticker}] - Within Band Gradient Buy trigger (Price=${current_price:.2f} <= P_buy=${p_buy:.2f}). Buying ${buy_amount:.2f}...")
-                    self._execute_vr_buy(current_price, buy_amount)
-            elif current_price >= p_sell and total_qty > 0:
-                sell_amount = valuation - self.v_target
-                if sell_amount >= min_trade_amount:
-                    sell_qty = min(sell_amount / current_price, total_qty)
-                    logger.info(f"VR [{self.ticker}] - Within Band Gradient Sell trigger (Price=${current_price:.2f} >= P_sell=${p_sell:.2f}). Selling {sell_qty:.4f} shares...")
-                    self._execute_vr_sell(current_price, sell_qty, sell_amount)
-            else:
-                logger.info(f"VR [{self.ticker}] - Valuation within normal band. No rebalancing needed today.")
+            # Within Band (V_min <= E <= V_max) -> Strict Band Rebalancing (No Action)
+            logger.info(f"VR [{self.ticker}] - Valuation E=${valuation:.2f} is within normal band [${v_min:.2f} ~ ${v_max:.2f}]. No rebalancing needed today.")
 
         # Mark daily rebalance date complete and persist state
         self.last_rebalance_date = today_us_date
@@ -278,22 +268,26 @@ class VrStrategy(BaseStrategy):
 
     def _execute_vr_sell(self, current_price: float, sell_qty: float, approx_sell_amount: float):
         """
-        Executes a VR sell order and adds expected proceeds to Pocket Cash.
+        Executes a VR sell order (supports fractional shares if sell_qty >= min_sell_qty) and adds expected proceeds to Pocket Cash.
         """
         min_sell_qty = float(self.config.get("min_sell_qty", 1.0))
         if sell_qty < min_sell_qty:
-            logger.info(f"VR [{self.ticker}] - Calculated sell qty {sell_qty:.4f} is below min_sell_qty {min_sell_qty}. Skipping sell.")
+            logger.info(f"VR [{self.ticker}] - Calculated sell qty {sell_qty:.4f} is below minimum {min_sell_qty} share. Skipping sell.")
             return
 
         buy_mode = self.config.get("buy_mode", "AMOUNT").upper()
         if buy_mode == "QTY":
-            res = self.api_client.place_limit_order(self.ticker, "SELL", int(sell_qty), current_price)
+            exec_qty = float(int(sell_qty))
+            if exec_qty < 1.0:
+                return
+            res = self.api_client.place_limit_order(self.ticker, "SELL", int(exec_qty), current_price)
         else:
-            res = self.api_client.place_market_order(self.ticker, "SELL", sell_qty)
+            exec_qty = sell_qty
+            res = self.api_client.place_market_order(self.ticker, "SELL", exec_qty)
 
         if res and "orderId" in res:
             oid = res["orderId"]
-            proceeds = sell_qty * current_price
+            proceeds = exec_qty * current_price
             self.pocket_cash += proceeds
             self._save_session_state()
 
@@ -301,12 +295,12 @@ class VrStrategy(BaseStrategy):
             total_cost = sum(float(o.get("price", 0.0)) * float(o.get("quantity", 0.0)) for o in self.incomplete_orders.values())
             total_qty = sum(float(o.get("quantity", 0.0)) for o in self.incomplete_orders.values())
             avg_buy_price = (total_cost / total_qty) if total_qty > 0 else current_price
-            profit = (current_price - avg_buy_price) * sell_qty
+            profit = (current_price - avg_buy_price) * exec_qty
 
-            self.db_manager.add_vr_trade_history(self.ticker, sell_qty, avg_buy_price, current_price, profit, oid)
+            self.db_manager.add_vr_trade_history(self.ticker, exec_qty, avg_buy_price, current_price, profit, oid)
 
             # Reduce incomplete orders proportionally or remove
-            remaining_to_deduct = sell_qty
+            remaining_to_deduct = float(exec_qty)
             for order_key in list(self.incomplete_orders.keys()):
                 ord_qty = float(self.incomplete_orders[order_key].get("quantity", 0.0))
                 if ord_qty <= remaining_to_deduct:
@@ -320,7 +314,7 @@ class VrStrategy(BaseStrategy):
                     remaining_to_deduct = 0
                     break
 
-            logger.info(f"VR [{self.ticker}] - Executed Sell Order ID={oid}, Qty={sell_qty:.4f}, Price=${current_price:.2f}, Profit=${profit:.2f}. New Pocket Cash: ${self.pocket_cash:.2f}")
+            logger.info(f"VR [{self.ticker}] - Executed Sell Order ID={oid}, Qty={exec_qty:.4f} shares, Price=${current_price:.2f}, Profit=${profit:.2f}. New Pocket Cash: ${self.pocket_cash:.2f}")
 
     def _verify_buy_executions(self):
         """
