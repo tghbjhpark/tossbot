@@ -22,7 +22,6 @@
     "max_session_buys": 40,
     "min_session_buys": 6,
     "min_sell_qty": 1.0,
-    "trailing_drop_rate": 0.01,
     "enabled": true
   },
   {

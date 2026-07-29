@@ -15,19 +15,16 @@ class DcaStrategy(BaseStrategy):
     """
     def initialize_state(self):
         """
-        Loads the persistent trailing stop state and displays diagnostics on bot start.
+        Loads the persistent DCA session state and displays diagnostics on bot start.
         """
-        state = self.db_manager.get_dca_session_state(self.ticker)
-        is_trailing = state.get("is_trailing", 0)
-        peak_price = state.get("peak_price", 0.0)
-
         min_session_buys = int(self.config.get("min_session_buys", 6))
         min_sell_qty = float(self.config.get("min_sell_qty", 1.0))
+        yield_target = float(self.config.get("yield_target", 0.10))
         logger.info(
             f"DCA Ticker [{self.ticker}] | Active Buys: {len(self.incomplete_orders)} | "
             f"Pending Buys: {len(self.pending_buy_orders)} | "
             f"Min Buys Limit: {min_session_buys} | Min Qty Limit: {min_sell_qty:.2f} | "
-            f"Trailing Active: {bool(is_trailing)} | Peak Price: {peak_price:.2f}"
+            f"Target Yield: {yield_target*100:.1f}%"
         )
         for oid, order in self.incomplete_orders.items():
             logger.info(f"  DCA Holding: ID={oid}, Price={order.get('price')}, Qty={order.get('quantity')}")
@@ -38,8 +35,8 @@ class DcaStrategy(BaseStrategy):
         # 1. Reconcile buy executions
         self._verify_buy_executions()
 
-        # 2. Check and process trailing stop status / liquidation
-        self._evaluate_trailing_stop(current_price)
+        # 2. Check profit target / liquidation
+        self._evaluate_profit_target(current_price)
 
         # If the ticker is disabled, block any new buys
         if not self.config.get("enabled", True):
@@ -103,17 +100,12 @@ class DcaStrategy(BaseStrategy):
         logger.info(f"DCA [{self.ticker}] - Time slot matched (KST {current_hour:02d}:{current_minute:02d}). Placing buy order...")
         self._place_dca_buy(current_price)
 
-    def _evaluate_trailing_stop(self, current_price: float):
+    def _evaluate_profit_target(self, current_price: float):
         """
-        Calculates session average price, checks profit trigger, and updates trailing stop state.
+        Calculates session average price and liquidates session immediately when target yield is met.
         """
         if not self.incomplete_orders:
             return
-
-        # Load session state from DB
-        state = self.db_manager.get_dca_session_state(self.ticker)
-        is_trailing = state.get("is_trailing", 0)
-        peak_price = state.get("peak_price", 0.0)
 
         # Calculate average buy price and total quantity
         total_qty = 0.0
@@ -132,8 +124,8 @@ class DcaStrategy(BaseStrategy):
         min_session_buys = int(self.config.get("min_session_buys", 6))
         if buy_count < min_session_buys:
             logger.info(
-                f"DCA Trailing Check [{self.ticker}] | Buy Count: {buy_count}/{min_session_buys} "
-                f"(Below min_session_buys={min_session_buys}). Skipping trailing stop check."
+                f"DCA Profit Check [{self.ticker}] | Buy Count: {buy_count}/{min_session_buys} "
+                f"(Below min_session_buys={min_session_buys}). Skipping profit check."
             )
             return
 
@@ -141,49 +133,27 @@ class DcaStrategy(BaseStrategy):
         min_sell_qty = float(self.config.get("min_sell_qty", 1.0))
         if total_qty < min_sell_qty:
             logger.info(
-                f"DCA Trailing Check [{self.ticker}] | Total Qty: {total_qty:.6f}/{min_sell_qty:.6f} "
-                f"(Below min_sell_qty={min_sell_qty}). Skipping trailing stop check."
+                f"DCA Profit Check [{self.ticker}] | Total Qty: {total_qty:.6f}/{min_sell_qty:.6f} "
+                f"(Below min_sell_qty={min_sell_qty}). Skipping profit check."
             )
             return
 
         average_buy_price = total_cost / total_qty
         current_yield = (current_price - average_buy_price) / average_buy_price
         yield_target = float(self.config.get("yield_target", 0.10))
-        trailing_drop_rate = float(self.config.get("trailing_drop_rate", 0.01))
 
         logger.info(
-            f"DCA Trailing Check [{self.ticker}] | Avg Buy: {average_buy_price:.2f} | "
-            f"Current Yield: {current_yield*100:.2f}% (Target: {yield_target*100:.2f}%) | "
-            f"Trailing Active: {bool(is_trailing)} | Peak Price: {peak_price:.2f}"
+            f"DCA Profit Check [{self.ticker}] | Avg Buy: ${average_buy_price:.2f} | "
+            f"Current Price: ${current_price:.2f} | "
+            f"Current Yield: {current_yield*100:.2f}% (Target: {yield_target*100:.2f}%)"
         )
 
-        if not is_trailing:
-            # Check if target yield is met to activate trailing stop
-            if current_yield >= yield_target:
-                is_trailing = 1
-                peak_price = current_price
-                self.db_manager.save_dca_session_state(self.ticker, is_trailing, peak_price)
-                logger.warning(
-                    f"★ DCA [{self.ticker}] - Trailing Stop Activated! "
-                    f"Target yield met ({current_yield*100:.2f}% >= {yield_target*100:.2f}%). "
-                    f"Initial Peak Price set to: {peak_price:.2f}"
-                )
-        else:
-            # Trailing stop is active. Update peak if current price is higher
-            if current_price > peak_price:
-                peak_price = current_price
-                self.db_manager.save_dca_session_state(self.ticker, is_trailing, peak_price)
-                logger.info(f"★ DCA [{self.ticker}] - Trailing Stop: Peak price updated to {peak_price:.2f}")
-
-            # Check if price dropped from peak by trailing_drop_rate or more
-            drop_price_threshold = peak_price * (1 - trailing_drop_rate)
-            if current_price <= drop_price_threshold:
-                logger.warning(
-                    f"★★ DCA [{self.ticker}] - Trailing Stop Triggered! "
-                    f"Current price {current_price:.2f} fell below drop threshold {drop_price_threshold:.2f} "
-                    f"(-{trailing_drop_rate*100:.2f}% from peak {peak_price:.2f}). Liquidating..."
-                )
-                self._liquidate_session(total_qty, average_buy_price)
+        if current_yield >= yield_target:
+            logger.warning(
+                f"★ DCA [{self.ticker}] - Target Yield Met! "
+                f"Current yield {current_yield*100:.2f}% >= Target {yield_target*100:.2f}%. Liquidating session..."
+            )
+            self._liquidate_session(total_qty, average_buy_price)
 
     def _liquidate_session(self, total_qty: float, average_buy_price: float):
         """
