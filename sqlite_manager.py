@@ -108,14 +108,23 @@ class SQLiteManager:
                 )
             """)
 
-            # 6. Table for DCA session trailing stop state
+            # 6. Table for DCA session state
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS dca_session_state (
                     symbol TEXT PRIMARY KEY,
                     is_trailing INTEGER DEFAULT 0,
-                    peak_price REAL DEFAULT 0.0
+                    peak_price REAL DEFAULT 0.0,
+                    has_partial_cut INTEGER DEFAULT 0,
+                    max_buys_offset INTEGER DEFAULT 0
                 )
             """)
+
+            cursor.execute("PRAGMA table_info(dca_session_state)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if "has_partial_cut" not in columns:
+                cursor.execute("ALTER TABLE dca_session_state ADD COLUMN has_partial_cut INTEGER DEFAULT 0")
+            if "max_buys_offset" not in columns:
+                cursor.execute("ALTER TABLE dca_session_state ADD COLUMN max_buys_offset INTEGER DEFAULT 0")
 
             # 7. Table for DCA completed session trade history
             cursor.execute("""
@@ -617,10 +626,10 @@ class SQLiteManager:
 
     def get_dca_session_state(self, symbol: str) -> dict:
         """
-        Retrieves the persistent trailing stop state for a given symbol.
+        Retrieves the persistent DCA session state (has_partial_cut, max_buys_offset) for a given symbol.
         """
         if not self._initialized:
-            return {"is_trailing": 0, "peak_price": 0.0}
+            return {"is_trailing": 0, "peak_price": 0.0, "has_partial_cut": 0, "max_buys_offset": 0}
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
@@ -628,18 +637,21 @@ class SQLiteManager:
             row = cursor.fetchone()
             conn.close()
             if row:
+                row_dict = dict(row)
                 return {
-                    "is_trailing": int(row["is_trailing"]),
-                    "peak_price": float(row["peak_price"])
+                    "is_trailing": int(row_dict.get("is_trailing", 0)),
+                    "peak_price": float(row_dict.get("peak_price", 0.0)),
+                    "has_partial_cut": int(row_dict.get("has_partial_cut", 0)),
+                    "max_buys_offset": int(row_dict.get("max_buys_offset", 0))
                 }
-            return {"is_trailing": 0, "peak_price": 0.0}
+            return {"is_trailing": 0, "peak_price": 0.0, "has_partial_cut": 0, "max_buys_offset": 0}
         except Exception as e:
             logger.error(f"Error fetching DCA session state for {symbol}: {e}")
-            return {"is_trailing": 0, "peak_price": 0.0}
+            return {"is_trailing": 0, "peak_price": 0.0, "has_partial_cut": 0, "max_buys_offset": 0}
 
-    def save_dca_session_state(self, symbol: str, is_trailing: int, peak_price: float) -> bool:
+    def save_dca_session_state(self, symbol: str, is_trailing: int = 0, peak_price: float = 0.0, has_partial_cut: int = 0, max_buys_offset: int = 0) -> bool:
         """
-        Saves the persistent trailing stop state.
+        Saves the persistent DCA session state.
         """
         if not self._initialized:
             return False
@@ -648,14 +660,14 @@ class SQLiteManager:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO dca_session_state (symbol, is_trailing, peak_price)
-                VALUES (?, ?, ?)
+                INSERT OR REPLACE INTO dca_session_state (symbol, is_trailing, peak_price, has_partial_cut, max_buys_offset)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (symbol, is_trailing, peak_price)
+                (symbol, is_trailing, peak_price, has_partial_cut, max_buys_offset)
             )
             conn.commit()
             conn.close()
-            logger.info(f"Successfully saved DCA session state for {symbol} (is_trailing={is_trailing}, peak_price={peak_price}).")
+            logger.info(f"Successfully saved DCA session state for {symbol} (has_partial_cut={has_partial_cut}, max_buys_offset={max_buys_offset}).")
             return True
         except Exception as e:
             logger.error(f"Error saving DCA session state for {symbol}: {e}")
