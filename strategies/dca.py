@@ -196,18 +196,18 @@ class DcaStrategy(BaseStrategy):
             self._liquidate_session(total_qty, average_buy_price)
             return
 
-        # 3) Check 1/4 Partial Cut & 1/8 Session Extension Rule
+        # 3) Check 30% Partial Cut & 20% Session Extension Rule
         three_quarter_buys = current_max_buys * 0.75
         if buy_count >= three_quarter_buys and current_yield < 0 and has_partial_cut == 0:
-            # Sell 1/4 of total quantity (at least 1.0 share if total_qty >= 1.0)
-            cut_qty = total_qty * 0.25
+            # Sell 30% of total quantity (at least 1.0 share if total_qty >= 1.0)
+            cut_qty = total_qty * 0.30
             if cut_qty < 1.0 and total_qty >= 1.0:
                 cut_qty = 1.0
             if cut_qty > total_qty:
                 cut_qty = total_qty
 
-            # Extension: 1/8 of base max_session_buys
-            extension = int(base_max_buys * (1.0 / 8.0))
+            # Extension: 20% (1/5) of base max_session_buys
+            extension = int(base_max_buys * (1.0 / 5.0))
             new_offset = max_buys_offset + extension
 
             # Save state to DB
@@ -221,13 +221,14 @@ class DcaStrategy(BaseStrategy):
 
             logger.warning(
                 f"★★ DCA [{self.ticker}] - 3/4 Progress ({buy_count}/{current_max_buys}) Negative Yield ({current_yield*100:.2f}%) Detected! "
-                f"Executing 1/4 Partial Cut ({cut_qty:.4f} shares) and extending max buys by +{extension} (New limit: {base_max_buys + new_offset})..."
+                f"Executing 30% Partial Cut ({cut_qty:.4f} shares) and extending max buys by +{extension} (New limit: {base_max_buys + new_offset})..."
             )
             self._execute_partial_cut(cut_qty, current_price, average_buy_price)
 
     def _execute_partial_cut(self, cut_qty: float, current_price: float, avg_buy_price: float):
         """
-        Executes a 1/4 partial cut market sell order and reduces incomplete orders FIFO.
+        Executes a 30% partial cut market sell order and proportionally reduces order quantities
+        without deleting order records from DB to preserve the buy count.
         """
         try:
             buy_mode = self.config.get("buy_mode", "AMOUNT").upper()
@@ -253,24 +254,19 @@ class DcaStrategy(BaseStrategy):
                     oid
                 )
 
-                # Reduce incomplete orders FIFO
-                remaining_to_deduct = cut_qty
-                for order_key in list(self.incomplete_orders.keys()):
-                    ord_qty = float(self.incomplete_orders[order_key].get("quantity", 0.0))
-                    if ord_qty <= remaining_to_deduct:
-                        remaining_to_deduct -= ord_qty
-                        del self.incomplete_orders[order_key]
-                        self.db_manager.remove_dca_incomplete_order(order_key)
-                    else:
-                        new_qty = ord_qty - remaining_to_deduct
-                        self.incomplete_orders[order_key]["quantity"] = str(new_qty)
-                        self.db_manager.add_dca_incomplete_order(order_key, self.incomplete_orders[order_key])
-                        remaining_to_deduct = 0
-                        break
+                # Proportionally scale down quantities for all active orders without deleting records (preserving buy count)
+                total_qty_before = sum(float(o.get("quantity", 0.0)) for o in self.incomplete_orders.values())
+                if total_qty_before > 0:
+                    scale_factor = max(0.0, (total_qty_before - cut_qty) / total_qty_before)
+                    for order_key, order_data in self.incomplete_orders.items():
+                        old_qty = float(order_data.get("quantity", 0.0))
+                        new_qty = old_qty * scale_factor
+                        order_data["quantity"] = str(new_qty)
+                        self.db_manager.add_dca_incomplete_order(order_key, order_data)
 
                 logger.warning(
-                    f"★★★ DCA [{self.ticker}] - 1/4 Partial Cut Completed! "
-                    f"Order ID: {oid} | Sold Qty: {cut_qty:.4f} @ ${current_price:.2f} | Profit: ${profit:.2f}"
+                    f"★★★ DCA [{self.ticker}] - 30% Partial Cut Completed! "
+                    f"Order ID: {oid} | Sold Qty: {cut_qty:.4f} @ ${current_price:.2f} | Profit: ${profit:.2f} | DB order records preserved ({len(self.incomplete_orders)} buys)."
                 )
         except Exception as e:
             logger.error(f"Failed to execute partial cut for DCA [{self.ticker}]: {e}")
