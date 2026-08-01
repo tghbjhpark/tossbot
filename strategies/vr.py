@@ -102,14 +102,15 @@ class VrStrategy(BaseStrategy):
         tz_us = pytz.timezone("America/New_York")
         now_us = datetime.now(tz_us)
         today_us_date = now_us.strftime("%Y-%m-%d")
-        self._check_and_update_cycle(today_us_date)
+        self._check_and_update_cycle(today_us_date, current_price)
 
         # 5. Perform real-time rebalance evaluation
         self._perform_rebalance(current_price, today_us_date)
 
-    def _check_and_update_cycle(self, today_us_date: str):
+    def _check_and_update_cycle(self, today_us_date: str, current_price: float):
         """
         Checks if cycle_days have elapsed since last_cycle_date, and updates V target & pocket cash accordingly.
+        Supports target_cash_ratio option to select max between legacy V target and target_cash_ratio derived V target.
         """
         cycle_days = int(self.config.get("cycle_days", 10))
         if self.last_cycle_date:
@@ -136,25 +137,44 @@ class VrStrategy(BaseStrategy):
         if mode == "ACCUMULATE":
             self.pocket_cash += deposit
             if g_factor > 0:
-                self.v_target = old_v + (self.pocket_cash / g_factor) + deposit
+                v_target_legacy = old_v + (self.pocket_cash / g_factor) + deposit
             else:
-                self.v_target = (old_v * (1.0 + growth_rate)) + deposit
+                v_target_legacy = (old_v * (1.0 + growth_rate)) + deposit
         elif mode == "LUMP_SUM":
             if g_factor > 0:
-                self.v_target = old_v + (self.pocket_cash / g_factor)
+                v_target_legacy = old_v + (self.pocket_cash / g_factor)
             else:
-                self.v_target = old_v * (1.0 + growth_rate)
+                v_target_legacy = old_v * (1.0 + growth_rate)
         elif mode == "WITHDRAWAL":
             self.pocket_cash = max(0.0, old_pocket - withdrawal)
             if g_factor > 0:
-                self.v_target = max(0.0, old_v + (self.pocket_cash / g_factor) - withdrawal)
+                v_target_legacy = max(0.0, old_v + (self.pocket_cash / g_factor) - withdrawal)
             else:
-                self.v_target = max(0.0, (old_v * (1.0 + growth_rate)) - withdrawal)
+                v_target_legacy = max(0.0, (old_v * (1.0 + growth_rate)) - withdrawal)
+        else:
+            v_target_legacy = old_v
+
+        # Check target_cash_ratio option
+        target_cash_ratio = self.config.get("target_cash_ratio")
+        if target_cash_ratio is not None and float(target_cash_ratio) > 0 and current_price > 0:
+            ratio = float(target_cash_ratio)
+            total_qty = sum(float(order.get("quantity", 0.0)) for order in self.incomplete_orders.values())
+            stock_valuation = total_qty * current_price
+            total_asset = stock_valuation + self.pocket_cash
+            target_cash = total_asset * ratio
+            cash_excess = self.pocket_cash - target_cash
+            if cash_excess > 0:
+                v_target_ratio = stock_valuation + cash_excess
+                self.v_target = max(v_target_legacy, v_target_ratio)
+            else:
+                self.v_target = v_target_legacy
+        else:
+            self.v_target = v_target_legacy
 
         self.last_cycle_date = today_us_date
         logger.info(
             f"VR [{self.ticker}] - Advanced to Cycle #{self.cycle_count}! "
-            f"V Target: ${old_v:.2f} -> ${self.v_target:.2f} | "
+            f"V Target: ${old_v:.2f} -> ${self.v_target:.2f} (Legacy V: ${v_target_legacy:.2f}) | "
             f"Pocket Cash: ${old_pocket:.2f} -> ${self.pocket_cash:.2f} (G={g_factor})"
         )
         self._save_session_state()
