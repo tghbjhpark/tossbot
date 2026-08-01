@@ -106,15 +106,21 @@ class DcaStrategy(BaseStrategy):
 
         # Rule 3: Final count reached -> On time slot matched, liquidate entire session to close
         if current_buys >= current_max_buys:
-            total_qty = sum(float(order["quantity"]) for order in self.incomplete_orders.values())
-            total_cost = sum(float(order["quantity"]) * float(order["price"]) for order in self.incomplete_orders.values())
-            avg_buy_price = (total_cost / total_qty) if total_qty > 0 else current_price
+            total_buy_qty = sum(float(order["quantity"]) for order in self.incomplete_orders.values())
+            total_buy_cost = sum(float(order["quantity"]) * float(order["price"]) for order in self.incomplete_orders.values())
+            
+            accumulated_cut_qty = state.get("cut_quantity", 0.0)
+            accumulated_cut_cost = state.get("cut_total_cost", 0.0)
+            
+            current_holding_qty = total_buy_qty - accumulated_cut_qty
+            current_holding_cost = total_buy_cost - accumulated_cut_cost
+            avg_buy_price = (current_holding_cost / current_holding_qty) if current_holding_qty > 0 else current_price
 
             logger.warning(
                 f"★★ DCA [{self.ticker}] - Final max session purchases reached ({current_buys}/{current_max_buys}). "
-                f"Time slot matched -> Liquidating session to exit..."
+                f"Time slot matched -> Liquidating session ({current_holding_qty:.4f} shares) to exit..."
             )
-            self._liquidate_session(total_qty, avg_buy_price)
+            self._liquidate_session(current_holding_qty, avg_buy_price)
             return
 
         # 7. Place new DCA buy order
@@ -128,16 +134,16 @@ class DcaStrategy(BaseStrategy):
         if not self.incomplete_orders:
             return
 
-        # Calculate average buy price and total quantity
-        total_qty = 0.0
-        total_cost = 0.0
+        # Calculate original total buy quantity and total cost
+        total_buy_qty = 0.0
+        total_buy_cost = 0.0
         for order in self.incomplete_orders.values():
             qty = float(order["quantity"])
             price = float(order["price"])
-            total_qty += qty
-            total_cost += qty * price
+            total_buy_qty += qty
+            total_buy_cost += qty * price
 
-        if total_qty == 0.0:
+        if total_buy_qty == 0.0:
             return
 
         buy_count = len(self.incomplete_orders)
@@ -146,6 +152,15 @@ class DcaStrategy(BaseStrategy):
         state = self.db_manager.get_dca_session_state(self.ticker)
         has_partial_cut = state.get("has_partial_cut", 0)
         max_buys_offset = state.get("max_buys_offset", 0)
+        accumulated_cut_qty = state.get("cut_quantity", 0.0)
+        accumulated_cut_cost = state.get("cut_total_cost", 0.0)
+
+        # Deduct partial cuts to get actual current holdings and cost
+        current_holding_qty = total_buy_qty - accumulated_cut_qty
+        current_holding_cost = total_buy_cost - accumulated_cut_cost
+
+        if current_holding_qty <= 0.0:
+            return
 
         base_max_buys = int(self.config.get("max_session_buys", 40))
         current_max_buys = base_max_buys + max_buys_offset
@@ -161,14 +176,14 @@ class DcaStrategy(BaseStrategy):
 
         # Check minimum sell quantity threshold
         min_sell_qty = float(self.config.get("min_sell_qty", 1.0))
-        if total_qty < min_sell_qty:
+        if current_holding_qty < min_sell_qty:
             logger.info(
-                f"DCA Profit Check [{self.ticker}] | Total Qty: {total_qty:.6f}/{min_sell_qty:.6f} "
+                f"DCA Profit Check [{self.ticker}] | Holding Qty: {current_holding_qty:.6f}/{min_sell_qty:.6f} "
                 f"(Below min_sell_qty={min_sell_qty}). Skipping profit check."
             )
             return
 
-        average_buy_price = total_cost / total_qty
+        average_buy_price = current_holding_cost / current_holding_qty
         current_yield = (current_price - average_buy_price) / average_buy_price
         base_target = float(self.config.get("yield_target", 0.10))
 
@@ -182,8 +197,8 @@ class DcaStrategy(BaseStrategy):
 
         logger.info(
             f"DCA Evaluation [{self.ticker}] | Buy Count: {buy_count}/{current_max_buys} | "
-            f"Avg Buy: ${average_buy_price:.2f} | Current Price: ${current_price:.2f} | "
-            f"Yield: {current_yield*100:.2f}% (Dynamic Target: {effective_target_yield*100:.2f}%) | "
+            f"Holding Qty: {current_holding_qty:.4f} | Avg Buy: ${average_buy_price:.2f} | "
+            f"Current Price: ${current_price:.2f} | Yield: {current_yield*100:.2f}% (Dynamic Target: {effective_target_yield*100:.2f}%) | "
             f"Partial Cut: {bool(has_partial_cut)}"
         )
 
@@ -193,18 +208,22 @@ class DcaStrategy(BaseStrategy):
                 f"★ DCA [{self.ticker}] - Dynamic Target Yield Met! "
                 f"Current yield {current_yield*100:.2f}% >= Target {effective_target_yield*100:.2f}%. Liquidating session..."
             )
-            self._liquidate_session(total_qty, average_buy_price)
+            self._liquidate_session(current_holding_qty, average_buy_price)
             return
 
         # 3) Check 30% Partial Cut & 20% Session Extension Rule
         three_quarter_buys = current_max_buys * 0.75
         if buy_count >= three_quarter_buys and current_yield < 0 and has_partial_cut == 0:
-            # Sell 30% of total quantity (at least 1.0 share if total_qty >= 1.0)
-            cut_qty = total_qty * 0.30
-            if cut_qty < 1.0 and total_qty >= 1.0:
+            # Sell 30% of current holding quantity (at least 1.0 share if current_holding_qty >= 1.0)
+            cut_qty = current_holding_qty * 0.30
+            if cut_qty < 1.0 and current_holding_qty >= 1.0:
                 cut_qty = 1.0
-            if cut_qty > total_qty:
-                cut_qty = total_qty
+            if cut_qty > current_holding_qty:
+                cut_qty = current_holding_qty
+
+            cut_cost = cut_qty * average_buy_price
+            new_cut_quantity = accumulated_cut_qty + cut_qty
+            new_cut_total_cost = accumulated_cut_cost + cut_cost
 
             # Extension: 20% (1/5) of base max_session_buys
             extension = int(base_max_buys * (1.0 / 5.0))
@@ -216,19 +235,20 @@ class DcaStrategy(BaseStrategy):
                 is_trailing=0,
                 peak_price=0.0,
                 has_partial_cut=1,
-                max_buys_offset=new_offset
+                max_buys_offset=new_offset,
+                cut_quantity=new_cut_quantity,
+                cut_total_cost=new_cut_total_cost
             )
 
             logger.warning(
                 f"★★ DCA [{self.ticker}] - 3/4 Progress ({buy_count}/{current_max_buys}) Negative Yield ({current_yield*100:.2f}%) Detected! "
-                f"Executing 30% Partial Cut ({cut_qty:.4f} shares) and extending max buys by +{extension} (New limit: {base_max_buys + new_offset})..."
+                f"Executing 30% Partial Cut ({cut_qty:.4f} shares @ ${average_buy_price:.2f}) and extending max buys by +{extension} (New limit: {base_max_buys + new_offset})..."
             )
             self._execute_partial_cut(cut_qty, current_price, average_buy_price)
 
     def _execute_partial_cut(self, cut_qty: float, current_price: float, avg_buy_price: float):
         """
-        Executes a 30% partial cut market sell order and proportionally reduces order quantities
-        without deleting order records from DB to preserve the buy count.
+        Executes a 30% partial cut market sell order and records trade history while preserving original buy records.
         """
         try:
             buy_mode = self.config.get("buy_mode", "AMOUNT").upper()
@@ -254,19 +274,9 @@ class DcaStrategy(BaseStrategy):
                     oid
                 )
 
-                # Proportionally scale down quantities for all active orders without deleting records (preserving buy count)
-                total_qty_before = sum(float(o.get("quantity", 0.0)) for o in self.incomplete_orders.values())
-                if total_qty_before > 0:
-                    scale_factor = max(0.0, (total_qty_before - cut_qty) / total_qty_before)
-                    for order_key, order_data in self.incomplete_orders.items():
-                        old_qty = float(order_data.get("quantity", 0.0))
-                        new_qty = old_qty * scale_factor
-                        order_data["quantity"] = str(new_qty)
-                        self.db_manager.add_dca_incomplete_order(order_key, order_data)
-
                 logger.warning(
                     f"★★★ DCA [{self.ticker}] - 30% Partial Cut Completed! "
-                    f"Order ID: {oid} | Sold Qty: {cut_qty:.4f} @ ${current_price:.2f} | Profit: ${profit:.2f} | DB order records preserved ({len(self.incomplete_orders)} buys)."
+                    f"Order ID: {oid} | Sold Qty: {cut_qty:.4f} @ ${current_price:.2f} | Profit: ${profit:.2f} | DB original order records preserved ({len(self.incomplete_orders)} buys)."
                 )
         except Exception as e:
             logger.error(f"Failed to execute partial cut for DCA [{self.ticker}]: {e}")
@@ -318,9 +328,10 @@ class DcaStrategy(BaseStrategy):
                 prices = self.api_client.get_current_prices([self.ticker])
                 sell_price = prices.get(self.ticker, average_buy_price * (1 + float(self.config.get("yield_target", 0.10))))
 
-            # Record in trade history
+            # Record in trade history and archive individual session buy orders
             profit = (sell_price - average_buy_price) * total_qty
             buy_count = len(self.incomplete_orders)
+            session_id = f"SESS_{self.ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             
             self.db_manager.add_dca_trade_history(
                 self.ticker,
@@ -329,8 +340,12 @@ class DcaStrategy(BaseStrategy):
                 sell_price,
                 profit,
                 buy_count,
-                sell_order_id
+                sell_order_id,
+                session_id
             )
+
+            # Archive individual buy records before clearing
+            self.db_manager.archive_dca_session_buys(session_id, self.ticker, self.incomplete_orders)
 
             # Clear DB and memory states
             self.db_manager.clear_dca_incomplete_orders(self.ticker)
@@ -338,7 +353,7 @@ class DcaStrategy(BaseStrategy):
             self.incomplete_orders.clear()
             
             logger.warning(
-                f"★★★ DCA [{self.ticker}] - Liquidation Completed! "
+                f"★★★ DCA [{self.ticker}] - Liquidation Completed! Session ID: {session_id} | "
                 f"Liquidated Qty: {total_qty:.6f} | Avg Buy: {average_buy_price:.2f} | "
                 f"Sell Price: {sell_price:.2f} | Profit: {profit:.2f} | Buy Count: {buy_count}"
             )

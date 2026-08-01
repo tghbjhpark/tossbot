@@ -115,7 +115,9 @@ class SQLiteManager:
                     is_trailing INTEGER DEFAULT 0,
                     peak_price REAL DEFAULT 0.0,
                     has_partial_cut INTEGER DEFAULT 0,
-                    max_buys_offset INTEGER DEFAULT 0
+                    max_buys_offset INTEGER DEFAULT 0,
+                    cut_quantity REAL DEFAULT 0.0,
+                    cut_total_cost REAL DEFAULT 0.0
                 )
             """)
 
@@ -125,11 +127,16 @@ class SQLiteManager:
                 cursor.execute("ALTER TABLE dca_session_state ADD COLUMN has_partial_cut INTEGER DEFAULT 0")
             if "max_buys_offset" not in columns:
                 cursor.execute("ALTER TABLE dca_session_state ADD COLUMN max_buys_offset INTEGER DEFAULT 0")
+            if "cut_quantity" not in columns:
+                cursor.execute("ALTER TABLE dca_session_state ADD COLUMN cut_quantity REAL DEFAULT 0.0")
+            if "cut_total_cost" not in columns:
+                cursor.execute("ALTER TABLE dca_session_state ADD COLUMN cut_total_cost REAL DEFAULT 0.0")
 
             # 7. Table for DCA completed session trade history
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS dca_trades_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
                     sell_order_id TEXT,
                     symbol TEXT NOT NULL,
                     quantity REAL NOT NULL,
@@ -140,6 +147,24 @@ class SQLiteManager:
                     profit REAL,
                     buy_count INTEGER NOT NULL,
                     status TEXT NOT NULL
+                )
+            """)
+
+            cursor.execute("PRAGMA table_info(dca_trades_history)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if "session_id" not in columns:
+                cursor.execute("ALTER TABLE dca_trades_history ADD COLUMN session_id TEXT")
+
+            # 7-1. Table for DCA completed session individual buy history
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS dca_session_buys_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    order_id TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    quantity REAL NOT NULL,
+                    ordered_at TEXT NOT NULL
                 )
             """)
 
@@ -626,10 +651,10 @@ class SQLiteManager:
 
     def get_dca_session_state(self, symbol: str) -> dict:
         """
-        Retrieves the persistent DCA session state (has_partial_cut, max_buys_offset) for a given symbol.
+        Retrieves the persistent DCA session state (has_partial_cut, max_buys_offset, cut_quantity, cut_total_cost) for a given symbol.
         """
         if not self._initialized:
-            return {"is_trailing": 0, "peak_price": 0.0, "has_partial_cut": 0, "max_buys_offset": 0}
+            return {"is_trailing": 0, "peak_price": 0.0, "has_partial_cut": 0, "max_buys_offset": 0, "cut_quantity": 0.0, "cut_total_cost": 0.0}
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
@@ -642,14 +667,16 @@ class SQLiteManager:
                     "is_trailing": int(row_dict.get("is_trailing", 0)),
                     "peak_price": float(row_dict.get("peak_price", 0.0)),
                     "has_partial_cut": int(row_dict.get("has_partial_cut", 0)),
-                    "max_buys_offset": int(row_dict.get("max_buys_offset", 0))
+                    "max_buys_offset": int(row_dict.get("max_buys_offset", 0)),
+                    "cut_quantity": float(row_dict.get("cut_quantity", 0.0)),
+                    "cut_total_cost": float(row_dict.get("cut_total_cost", 0.0))
                 }
-            return {"is_trailing": 0, "peak_price": 0.0, "has_partial_cut": 0, "max_buys_offset": 0}
+            return {"is_trailing": 0, "peak_price": 0.0, "has_partial_cut": 0, "max_buys_offset": 0, "cut_quantity": 0.0, "cut_total_cost": 0.0}
         except Exception as e:
             logger.error(f"Error fetching DCA session state for {symbol}: {e}")
-            return {"is_trailing": 0, "peak_price": 0.0, "has_partial_cut": 0, "max_buys_offset": 0}
+            return {"is_trailing": 0, "peak_price": 0.0, "has_partial_cut": 0, "max_buys_offset": 0, "cut_quantity": 0.0, "cut_total_cost": 0.0}
 
-    def save_dca_session_state(self, symbol: str, is_trailing: int = 0, peak_price: float = 0.0, has_partial_cut: int = 0, max_buys_offset: int = 0) -> bool:
+    def save_dca_session_state(self, symbol: str, is_trailing: int = 0, peak_price: float = 0.0, has_partial_cut: int = 0, max_buys_offset: int = 0, cut_quantity: float = 0.0, cut_total_cost: float = 0.0) -> bool:
         """
         Saves the persistent DCA session state.
         """
@@ -660,14 +687,14 @@ class SQLiteManager:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO dca_session_state (symbol, is_trailing, peak_price, has_partial_cut, max_buys_offset)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO dca_session_state (symbol, is_trailing, peak_price, has_partial_cut, max_buys_offset, cut_quantity, cut_total_cost)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (symbol, is_trailing, peak_price, has_partial_cut, max_buys_offset)
+                (symbol, is_trailing, peak_price, has_partial_cut, max_buys_offset, cut_quantity, cut_total_cost)
             )
             conn.commit()
             conn.close()
-            logger.info(f"Successfully saved DCA session state for {symbol} (has_partial_cut={has_partial_cut}, max_buys_offset={max_buys_offset}).")
+            logger.info(f"Successfully saved DCA session state for {symbol} (has_partial_cut={has_partial_cut}, max_buys_offset={max_buys_offset}, cut_quantity={cut_quantity:.4f}, cut_total_cost={cut_total_cost:.4f}).")
             return True
         except Exception as e:
             logger.error(f"Error saving DCA session state for {symbol}: {e}")
@@ -691,7 +718,7 @@ class SQLiteManager:
             logger.error(f"Error clearing DCA session state for {symbol}: {e}")
             return False
 
-    def add_dca_trade_history(self, symbol: str, total_qty: float, average_buy_price: float, sell_price: float, profit: float, buy_count: int, sell_order_id: str) -> bool:
+    def add_dca_trade_history(self, symbol: str, total_qty: float, average_buy_price: float, sell_price: float, profit: float, buy_count: int, sell_order_id: str, session_id: str = None) -> bool:
         """
         Records a completed DCA session liquidation in history.
         """
@@ -703,10 +730,11 @@ class SQLiteManager:
             cursor.execute(
                 """
                 INSERT INTO dca_trades_history 
-                (sell_order_id, symbol, quantity, buy_price, buy_time, sell_price, sell_time, profit, buy_count, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (session_id, sell_order_id, symbol, quantity, buy_price, buy_time, sell_price, sell_time, profit, buy_count, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    session_id,
                     sell_order_id,
                     symbol,
                     total_qty,
@@ -721,10 +749,43 @@ class SQLiteManager:
             )
             conn.commit()
             conn.close()
-            logger.info(f"Successfully saved DCA trade history for {symbol}. Profit: {profit:.4f}, Buy Count: {buy_count}")
+            logger.info(f"Successfully saved DCA trade history for {symbol} (Session ID: {session_id}). Profit: {profit:.4f}, Buy Count: {buy_count}")
             return True
         except Exception as e:
             logger.error(f"Error adding DCA trade history for {symbol}: {e}")
+            return False
+
+    def archive_dca_session_buys(self, session_id: str, symbol: str, incomplete_orders: dict) -> bool:
+        """
+        Archives completed DCA session individual buy orders into dca_session_buys_history table.
+        """
+        if not self._initialized or not incomplete_orders:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            for oid, order in incomplete_orders.items():
+                cursor.execute(
+                    """
+                    INSERT INTO dca_session_buys_history
+                    (session_id, symbol, order_id, price, quantity, ordered_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        symbol,
+                        order.get("orderId", oid),
+                        float(order.get("price", 0.0)),
+                        float(order.get("quantity", 0.0)),
+                        order.get("orderedAt", datetime.now().isoformat())
+                    )
+                )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully archived {len(incomplete_orders)} buy records for session {session_id} ({symbol}).")
+            return True
+        except Exception as e:
+            logger.error(f"Error archiving DCA session buys for {session_id} ({symbol}): {e}")
             return False
 
     # === VR (Value Rebalancing) Helper Methods ===
