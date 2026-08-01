@@ -86,7 +86,9 @@ def parse_ticker_item(item: dict) -> dict:
         "g_factor": float(item.get("g_factor", 10.0)) if item.get("g_factor") is not None else 10.0,
         "cycle_days": int(item.get("cycle_days", 10)),
         "min_trade_amount": float(item.get("min_trade_amount", 10.0)),
-        "rebalance_hour_us": int(item.get("rebalance_hour_us") or item.get("rebalance_hour") or 11)
+        "rebalance_hour_us": int(item.get("rebalance_hour_us") or item.get("rebalance_hour") or 11),
+        "target_cash_ratio": float(item.get("target_cash_ratio")) if item.get("target_cash_ratio") is not None else None,
+        "one_time_deposit": float(item.get("one_time_deposit", 0.0))
     }
 
 def _build_configs_dict(items: list) -> dict:
@@ -241,6 +243,57 @@ def update_stop_loss_count(key_or_ticker: str, count: int = 0):
             logger.info(f"Updated stop_loss_count for [{target_key}] to {count} in {TICKER_JSON_PATH}")
         except Exception as e:
             logger.error(f"Failed to update stop_loss_count in {TICKER_JSON_PATH}: {e}")
+
+def reset_one_time_deposit(key_or_ticker: str):
+    """
+    Resets one_time_deposit for instance_key or ticker in TICKER_CONFIGS to 0.0 and persists to TICKER_JSON_PATH.
+    """
+    target_key = key_or_ticker.strip()
+    matching_ticker = ""
+    matching_strategy = ""
+    
+    if target_key in TICKER_CONFIGS:
+        TICKER_CONFIGS[target_key]["one_time_deposit"] = 0.0
+        matching_ticker = TICKER_CONFIGS[target_key]["ticker"]
+        matching_strategy = TICKER_CONFIGS[target_key]["strategy"]
+    else:
+        for ik, cfg in TICKER_CONFIGS.items():
+            if cfg["ticker"] == target_key.upper() or ik == target_key:
+                cfg["one_time_deposit"] = 0.0
+                matching_ticker = cfg["ticker"]
+                matching_strategy = cfg["strategy"]
+                break
+        
+    if os.path.exists(TICKER_JSON_PATH):
+        try:
+            with open(TICKER_JSON_PATH, "r", encoding="utf-8") as f:
+                configs = json.load(f)
+            
+            is_list = isinstance(configs, list)
+            items = configs if is_list else list(configs.values())
+            
+            for item in items:
+                item_ticker = item.get("ticker", "").upper().strip()
+                item_strategy = item.get("strategy", "GRID").upper().strip()
+                item_id = item.get("id") or item.get("name")
+                
+                if item_id and str(item_id).strip() == target_key:
+                    item["one_time_deposit"] = 0.0
+                    break
+                elif matching_ticker and item_ticker == matching_ticker and item_strategy == matching_strategy:
+                    item["one_time_deposit"] = 0.0
+                    break
+                elif item_ticker == target_key.upper():
+                    item["one_time_deposit"] = 0.0
+                    break
+                    
+            with open(TICKER_JSON_PATH, "w", encoding="utf-8") as f:
+                json.dump(configs, f, indent=2, ensure_ascii=False)
+            
+            _last_mtime = os.path.getmtime(TICKER_JSON_PATH)
+            logger.info(f"Reset one_time_deposit for [{target_key}] to 0.0 in {TICKER_JSON_PATH}")
+        except Exception as e:
+            logger.error(f"Failed to reset one_time_deposit in {TICKER_JSON_PATH}: {e}")
 
 logger.info(
     f"Configuration Loaded: TICKERS={TICKERS}, TICKER_CONFIGS={TICKER_CONFIGS}, "

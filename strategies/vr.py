@@ -61,6 +61,28 @@ class VrStrategy(BaseStrategy):
             f"Daily Rebalance Hour: {rebalance_hour}:00 US ET | "
             f"Holdings: {len(self.incomplete_orders)} | Pending Buys: {len(self.pending_buy_orders)}"
         )
+        self._check_one_time_deposit()
+
+    def _check_one_time_deposit(self):
+        """
+        Checks if one_time_deposit is set in config. If > 0, adds it to pocket_cash without modifying v_target
+        and resets one_time_deposit in config and ticker.json to 0.0.
+        """
+        extra_deposit = float(self.config.get("one_time_deposit", 0.0))
+        if extra_deposit > 0:
+            old_pocket = self.pocket_cash
+            self.pocket_cash += extra_deposit
+            self.config["one_time_deposit"] = 0.0
+            self._save_session_state()
+            try:
+                from config import reset_one_time_deposit
+                reset_one_time_deposit(self.instance_key if hasattr(self, "instance_key") else self.ticker)
+            except Exception as e:
+                logger.error(f"Error resetting one_time_deposit in config: {e}")
+            logger.info(
+                f"★★ VR [{self.ticker}] - Applied 1-time extra deposit ${extra_deposit:.2f}! "
+                f"Pocket Cash: ${old_pocket:.2f} -> ${self.pocket_cash:.2f} (V target unchanged at ${self.v_target:.2f})."
+            )
 
     def _save_session_state(self):
         """
@@ -78,6 +100,9 @@ class VrStrategy(BaseStrategy):
     def evaluate(self, current_price: float):
         # 1. Verify pending buy and sell order executions
         self._verify_buy_executions()
+
+        # Check 1-time deposit if updated dynamically
+        self._check_one_time_deposit()
 
         # Check if disabled
         if not self.config.get("enabled", True):
