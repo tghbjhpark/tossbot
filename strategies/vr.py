@@ -219,7 +219,7 @@ class VrStrategy(BaseStrategy):
         v_min = self.v_target / (1.0 + band_rate)
 
         logger.info(
-            f"VR [{self.ticker}] Daily Evaluation: Holdings={total_qty:.4f} @ ${current_price:.2f} | "
+            f"VR [{self.ticker}] Real-time Evaluation: Holdings={total_qty:.4f} @ ${current_price:.2f} | "
             f"Valuation E=${valuation:.2f} | V=${self.v_target:.2f} | Band=[${v_min:.2f} ~ ${v_max:.2f}] | "
             f"Pocket Cash=${self.pocket_cash:.2f}"
         )
@@ -252,7 +252,7 @@ class VrStrategy(BaseStrategy):
                 logger.warning(f"VR [{self.ticker}] - Undervaluation detected but Pocket Cash is depleted (${self.pocket_cash:.2f} < ${min_trade_amount:.2f}). Holding.")
         else:
             # Within Band (V_min <= E <= V_max) -> Strict Band Rebalancing (No Action)
-            logger.info(f"VR [{self.ticker}] - Valuation E=${valuation:.2f} is within normal band [${v_min:.2f} ~ ${v_max:.2f}]. No rebalancing needed today.")
+            logger.info(f"VR [{self.ticker}] - Valuation E=${valuation:.2f} is within normal band [${v_min:.2f} ~ ${v_max:.2f}]. No rebalancing needed.")
 
         # Mark daily rebalance date complete and persist state
         self.last_rebalance_date = today_us_date
