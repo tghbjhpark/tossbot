@@ -20,3 +20,9 @@ venv/
 .DS_Store
 .DS_Store?
 ._*
+
+# Scratch & local temporary/sensitive configs
+scratch/
+ticker.json
+toss.openapi.json
+
