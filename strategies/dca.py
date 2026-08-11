@@ -4,6 +4,7 @@ from datetime import datetime
 import pytz
 
 from strategies.base import BaseStrategy
+from config import update_ticker_enabled
 
 logger = logging.getLogger("TossTradeBot.Strategy.DCA")
 
@@ -352,10 +353,16 @@ class DcaStrategy(BaseStrategy):
             self.db_manager.clear_dca_session_state(self.ticker)
             self.incomplete_orders.clear()
             
+            # Disable DCA strategy instance to pause further buying until user sets enabled=true
+            self.config["enabled"] = False
+            instance_key = self.config.get("id") or self.config.get("name") or self.ticker
+            update_ticker_enabled(instance_key, False)
+            
             logger.warning(
-                f"★★★ DCA [{self.ticker}] - Liquidation Completed! Session ID: {session_id} | "
+                f"★★★ DCA [{self.ticker}] - Liquidation Completed & Strategy Disabled (Paused)! Session ID: {session_id} | "
                 f"Liquidated Qty: {total_qty:.6f} | Avg Buy: {average_buy_price:.2f} | "
-                f"Sell Price: {sell_price:.2f} | Profit: {profit:.2f} | Buy Count: {buy_count}"
+                f"Sell Price: {sell_price:.2f} | Profit: {profit:.2f} | Buy Count: {buy_count} | "
+                f"Set enabled=false in config. Change enabled=true in ticker.json to resume."
             )
         except Exception as e:
             logger.error(f"Failed to liquidate DCA session for [{self.ticker}]: {e}")

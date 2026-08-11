@@ -295,6 +295,58 @@ def reset_one_time_deposit(key_or_ticker: str):
         except Exception as e:
             logger.error(f"Failed to reset one_time_deposit in {TICKER_JSON_PATH}: {e}")
 
+def update_ticker_enabled(key_or_ticker: str, enabled: bool = False):
+    """
+    Updates enabled status for instance_key or ticker in TICKER_CONFIGS and persists to TICKER_JSON_PATH.
+    """
+    target_key = str(key_or_ticker).strip()
+    matching_ticker = ""
+    matching_strategy = ""
+    
+    if target_key in TICKER_CONFIGS:
+        TICKER_CONFIGS[target_key]["enabled"] = enabled
+        matching_ticker = TICKER_CONFIGS[target_key]["ticker"]
+        matching_strategy = TICKER_CONFIGS[target_key]["strategy"]
+    else:
+        for ik, cfg in TICKER_CONFIGS.items():
+            if cfg["ticker"] == target_key.upper() or ik == target_key:
+                cfg["enabled"] = enabled
+                matching_ticker = cfg["ticker"]
+                matching_strategy = cfg["strategy"]
+                break
+        
+    if os.path.exists(TICKER_JSON_PATH):
+        try:
+            with open(TICKER_JSON_PATH, "r", encoding="utf-8") as f:
+                configs = json.load(f)
+            
+            is_list = isinstance(configs, list)
+            items = configs if is_list else list(configs.values())
+            
+            for item in items:
+                item_ticker = item.get("ticker", "").upper().strip()
+                item_strategy = item.get("strategy", "GRID").upper().strip()
+                item_id = item.get("id") or item.get("name")
+                
+                if item_id and str(item_id).strip() == target_key:
+                    item["enabled"] = enabled
+                    break
+                elif matching_ticker and item_ticker == matching_ticker and item_strategy == matching_strategy:
+                    item["enabled"] = enabled
+                    break
+                elif item_ticker == target_key.upper():
+                    item["enabled"] = enabled
+                    break
+                    
+            with open(TICKER_JSON_PATH, "w", encoding="utf-8") as f:
+                json.dump(configs, f, indent=2, ensure_ascii=False)
+            
+            global _last_mtime
+            _last_mtime = os.path.getmtime(TICKER_JSON_PATH)
+            logger.info(f"Updated enabled status for [{target_key}] to {enabled} in {TICKER_JSON_PATH}")
+        except Exception as e:
+            logger.error(f"Failed to update enabled status in {TICKER_JSON_PATH}: {e}")
+
 logger.info(
     f"Configuration Loaded: TICKERS={TICKERS}, TICKER_CONFIGS={TICKER_CONFIGS}, "
     f"POLLING_INTERVAL={POLLING_INTERVAL}s"
