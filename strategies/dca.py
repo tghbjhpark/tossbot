@@ -33,7 +33,7 @@ class DcaStrategy(BaseStrategy):
             f"Pending Buys: {len(self.pending_buy_orders)} | "
             f"Max Buys: {current_max_buys} (Base: {base_max_buys}, Offset: +{max_buys_offset}) | "
             f"Min Buys Limit: {min_session_buys} | Min Qty Limit: {min_sell_qty:.2f} | "
-            f"Base Target Yield: {yield_target*100:.1f}% | Partial Cut Done: {bool(has_partial_cut)}"
+            f"Base Target Yield: {yield_target*100:.1f}% | Slow Buy Mode (1/day): {bool(has_partial_cut)}"
         )
         for oid, order in self.incomplete_orders.items():
             logger.info(f"  DCA Holding: ID={oid}, Price={order.get('price')}, Qty={order.get('quantity')}")
@@ -58,20 +58,32 @@ class DcaStrategy(BaseStrategy):
         current_hour = now_kst.hour
         current_minute = now_kst.minute
 
+        # Check if slow buy mode (has_partial_cut == 1) is active
+        state = self.db_manager.get_dca_session_state(self.ticker)
+        has_partial_cut = state.get("has_partial_cut", 0)
+
         is_slot = False
         market = self.config.get("market", "US").upper()
         if market == "US":
-            # US Market DCA buying slots: KST 23:00, 01:00, 03:00
-            if (current_hour == 23 and 0 <= current_minute <= 2) or \
-               (current_hour == 1 and 0 <= current_minute <= 2) or \
-               (current_hour == 3 and 0 <= current_minute <= 2):
-                is_slot = True
+            # US Market DCA buying slots: Normal (23:00, 01:00, 03:00) / Slow mode (23:00 only)
+            if has_partial_cut:
+                if (current_hour == 23 and 0 <= current_minute <= 2):
+                    is_slot = True
+            else:
+                if (current_hour == 23 and 0 <= current_minute <= 2) or \
+                   (current_hour == 1 and 0 <= current_minute <= 2) or \
+                   (current_hour == 3 and 0 <= current_minute <= 2):
+                    is_slot = True
         else: # KR
-            # KR Market DCA buying slots: KST 10:00, 12:30, 15:00
-            if (current_hour == 10 and 0 <= current_minute <= 2) or \
-               (current_hour == 12 and 30 <= current_minute <= 32) or \
-               (current_hour == 15 and 0 <= current_minute <= 2):
-                is_slot = True
+            # KR Market DCA buying slots: Normal (10:00, 12:30, 15:00) / Slow mode (10:00 only)
+            if has_partial_cut:
+                if (current_hour == 10 and 0 <= current_minute <= 2):
+                    is_slot = True
+            else:
+                if (current_hour == 10 and 0 <= current_minute <= 2) or \
+                   (current_hour == 12 and 30 <= current_minute <= 32) or \
+                   (current_hour == 15 and 0 <= current_minute <= 2):
+                    is_slot = True
 
         if not is_slot:
             return
@@ -200,7 +212,7 @@ class DcaStrategy(BaseStrategy):
             f"DCA Evaluation [{self.ticker}] | Buy Count: {buy_count}/{current_max_buys} | "
             f"Holding Qty: {current_holding_qty:.4f} | Avg Buy: ${average_buy_price:.2f} | "
             f"Current Price: ${current_price:.2f} | Yield: {current_yield*100:.2f}% (Dynamic Target: {effective_target_yield*100:.2f}%) | "
-            f"Partial Cut: {bool(has_partial_cut)}"
+            f"Slow Buy Mode (1/day): {bool(has_partial_cut)}"
         )
 
         # 2) Check Profit Target -> Full Liquidation
@@ -212,75 +224,24 @@ class DcaStrategy(BaseStrategy):
             self._liquidate_session(current_holding_qty, average_buy_price)
             return
 
-        # 3) Check 30% Partial Cut & 20% Session Extension Rule
+        # 3) Check 3/4 Progress Negative Yield -> Switch to 1-time-per-day Slow Buy Mode (No partial cut, No buy count extension)
         three_quarter_buys = current_max_buys * 0.75
         if buy_count >= three_quarter_buys and current_yield < 0 and has_partial_cut == 0:
-            # Sell 30% of current holding quantity (at least 1.0 share if current_holding_qty >= 1.0)
-            cut_qty = current_holding_qty * 0.30
-            if cut_qty < 1.0 and current_holding_qty >= 1.0:
-                cut_qty = 1.0
-            if cut_qty > current_holding_qty:
-                cut_qty = current_holding_qty
-
-            cut_cost = cut_qty * average_buy_price
-            new_cut_quantity = accumulated_cut_qty + cut_qty
-            new_cut_total_cost = accumulated_cut_cost + cut_cost
-
-            # Extension: 20% (1/5) of base max_session_buys
-            extension = int(base_max_buys * (1.0 / 5.0))
-            new_offset = max_buys_offset + extension
-
-            # Save state to DB
+            # Save state to DB setting has_partial_cut = 1 to activate slow buy mode (1 time/day)
             self.db_manager.save_dca_session_state(
                 self.ticker,
                 is_trailing=0,
                 peak_price=0.0,
                 has_partial_cut=1,
-                max_buys_offset=new_offset,
-                cut_quantity=new_cut_quantity,
-                cut_total_cost=new_cut_total_cost
+                max_buys_offset=max_buys_offset,
+                cut_quantity=accumulated_cut_qty,
+                cut_total_cost=accumulated_cut_cost
             )
 
             logger.warning(
                 f"★★ DCA [{self.ticker}] - 3/4 Progress ({buy_count}/{current_max_buys}) Negative Yield ({current_yield*100:.2f}%) Detected! "
-                f"Executing 30% Partial Cut ({cut_qty:.4f} shares @ ${average_buy_price:.2f}) and extending max buys by +{extension} (New limit: {base_max_buys + new_offset})..."
+                f"Switching to 1-time-per-day slow buying mode until session end (No partial cut, No buy count extension)."
             )
-            self._execute_partial_cut(cut_qty, current_price, average_buy_price)
-
-    def _execute_partial_cut(self, cut_qty: float, current_price: float, avg_buy_price: float):
-        """
-        Executes a 30% partial cut market sell order and records trade history while preserving original buy records.
-        """
-        try:
-            buy_mode = self.config.get("buy_mode", "AMOUNT").upper()
-            if buy_mode == "AMOUNT":
-                sell_res = self.api_client.place_market_order(self.ticker, "SELL", cut_qty)
-            else:
-                exec_qty = max(1, int(cut_qty))
-                sell_res = self.api_client.place_market_order(self.ticker, "SELL", exec_qty)
-                cut_qty = float(exec_qty)
-
-            if sell_res and "orderId" in sell_res:
-                oid = sell_res["orderId"]
-                profit = (current_price - avg_buy_price) * cut_qty
-
-                # Record trade history
-                self.db_manager.add_dca_trade_history(
-                    self.ticker,
-                    cut_qty,
-                    avg_buy_price,
-                    current_price,
-                    profit,
-                    len(self.incomplete_orders),
-                    oid
-                )
-
-                logger.warning(
-                    f"★★★ DCA [{self.ticker}] - 30% Partial Cut Completed! "
-                    f"Order ID: {oid} | Sold Qty: {cut_qty:.4f} @ ${current_price:.2f} | Profit: ${profit:.2f} | DB original order records preserved ({len(self.incomplete_orders)} buys)."
-                )
-        except Exception as e:
-            logger.error(f"Failed to execute partial cut for DCA [{self.ticker}]: {e}")
 
     def _liquidate_session(self, total_qty: float, average_buy_price: float):
         """
