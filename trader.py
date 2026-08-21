@@ -66,6 +66,10 @@ class TradeBot:
         raw_vr_incomplete = self.db_manager.get_vr_incomplete_orders()
         raw_vr_pending = self.db_manager.get_vr_pending_buy_orders()
         
+        # Load CRSI data
+        raw_crsi_incomplete = self.db_manager.get_crsi_incomplete_orders()
+        raw_crsi_pending = self.db_manager.get_crsi_pending_buy_orders()
+        
         for instance_key, strategy in self.strategies.items():
             strategy_name = strategy.config.get("strategy", "GRID").upper()
             ticker = strategy.ticker
@@ -83,6 +87,13 @@ class TradeBot:
                 }
                 strategy.pending_buy_orders = {
                     oid: order for oid, order in raw_vr_pending.items() if order.get("symbol") == ticker
+                }
+            elif strategy_name == "CRSI":
+                strategy.incomplete_orders = {
+                    oid: order for oid, order in raw_crsi_incomplete.items() if order.get("symbol") == ticker
+                }
+                strategy.pending_buy_orders = {
+                    oid: order for oid, order in raw_crsi_pending.items() if order.get("symbol") == ticker
                 }
             else: # GRID
                 strategy.incomplete_orders = {

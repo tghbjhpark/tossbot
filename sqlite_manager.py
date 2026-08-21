@@ -220,6 +220,57 @@ class SQLiteManager:
                     status TEXT NOT NULL
                 )
             """)
+
+            # 12. Table for CRSI pending buy orders
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS crsi_pending_buy_orders (
+                    order_id TEXT PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL NOT NULL,
+                    ordered_at TEXT NOT NULL
+                )
+            """)
+
+            # 13. Table for CRSI incomplete holdings
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS crsi_incomplete_orders (
+                    order_id TEXT PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    quantity REAL NOT NULL,
+                    buy_price REAL NOT NULL,
+                    ordered_at TEXT NOT NULL,
+                    holding_days INTEGER DEFAULT 0,
+                    exchange_order_id TEXT
+                )
+            """)
+
+            # 14. Table for CRSI session state
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS crsi_session_state (
+                    symbol TEXT PRIMARY KEY,
+                    last_eval_date TEXT,
+                    entry_date TEXT
+                )
+            """)
+
+            # 15. Table for CRSI trades history
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS crsi_trades_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sell_order_id TEXT,
+                    symbol TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    buy_price REAL NOT NULL,
+                    buy_time TEXT,
+                    sell_price REAL,
+                    sell_time TEXT,
+                    profit REAL,
+                    holding_days INTEGER DEFAULT 0,
+                    status TEXT NOT NULL
+                )
+            """)
             
             conn.commit()
             conn.close()
@@ -1013,5 +1064,263 @@ class SQLiteManager:
         except Exception as e:
             logger.error(f"Error clearing VR session state for {symbol}: {e}")
             return False
+
+    # =========================================================================
+    # CRSI (Connors RSI Strategy) Methods
+    # =========================================================================
+
+    def get_crsi_incomplete_orders(self) -> dict:
+        if not self._initialized:
+            return {}
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM crsi_incomplete_orders")
+            rows = cursor.fetchall()
+            conn.close()
+            orders = {}
+            for row in rows:
+                oid = row["order_id"]
+                orders[oid] = {
+                    "orderId": oid,
+                    "symbol": row["symbol"],
+                    "price": str(row["price"]),
+                    "quantity": str(row["quantity"]),
+                    "buyPrice": str(row["buy_price"]),
+                    "orderedAt": row["ordered_at"],
+                    "holdingDays": int(row["holding_days"]) if row["holding_days"] is not None else 0,
+                    "exchangeOrderId": row["exchange_order_id"] or ""
+                }
+            return orders
+        except Exception as e:
+            logger.error(f"Error fetching CRSI incomplete orders: {e}")
+            return {}
+
+    def add_crsi_incomplete_order(self, order_id: str, order_data: dict) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO crsi_incomplete_orders 
+                (order_id, symbol, price, quantity, buy_price, ordered_at, holding_days, exchange_order_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    order_id,
+                    order_data.get("symbol"),
+                    float(order_data.get("price", 0.0)),
+                    float(order_data.get("quantity", 0.0)),
+                    float(order_data.get("buyPrice", order_data.get("price", 0.0))),
+                    order_data.get("orderedAt", datetime.now().isoformat()),
+                    int(order_data.get("holdingDays", 0)),
+                    order_data.get("exchangeOrderId", "")
+                )
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully added CRSI incomplete order {order_id} to SQLite.")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding CRSI incomplete order {order_id}: {e}")
+            return False
+
+    def update_crsi_incomplete_order_days(self, order_id: str, holding_days: int) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE crsi_incomplete_orders SET holding_days = ? WHERE order_id = ?", (holding_days, order_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating CRSI holding days for {order_id}: {e}")
+            return False
+
+    def update_crsi_incomplete_order_exchange_id(self, order_id: str, exchange_order_id: str) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE crsi_incomplete_orders SET exchange_order_id = ? WHERE order_id = ?", (exchange_order_id, order_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating CRSI exchange order id for {order_id}: {e}")
+            return False
+
+    def remove_crsi_incomplete_order(self, order_id: str) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM crsi_incomplete_orders WHERE order_id = ?", (order_id,))
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully removed CRSI incomplete order {order_id} from SQLite.")
+            return True
+        except Exception as e:
+            logger.error(f"Error removing CRSI incomplete order {order_id}: {e}")
+            return False
+
+    def get_crsi_pending_buy_orders(self) -> dict:
+        if not self._initialized:
+            return {}
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM crsi_pending_buy_orders")
+            rows = cursor.fetchall()
+            conn.close()
+            orders = {}
+            for row in rows:
+                oid = row["order_id"]
+                orders[oid] = {
+                    "orderId": oid,
+                    "symbol": row["symbol"],
+                    "quantity": float(row["quantity"]),
+                    "price": float(row["price"]),
+                    "orderedAt": row["ordered_at"]
+                }
+            return orders
+        except Exception as e:
+            logger.error(f"Error fetching CRSI pending buy orders: {e}")
+            return {}
+
+    def add_crsi_pending_buy_order(self, order_id: str, symbol: str, quantity: float, price: float) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO crsi_pending_buy_orders (order_id, symbol, quantity, price, ordered_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (order_id, symbol, quantity, price, datetime.now().isoformat())
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully added CRSI pending buy order {order_id} for {symbol} to SQLite.")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding CRSI pending buy order {order_id}: {e}")
+            return False
+
+    def remove_crsi_pending_buy_order(self, order_id: str) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM crsi_pending_buy_orders WHERE order_id = ?", (order_id,))
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully removed CRSI pending buy order {order_id} from SQLite.")
+            return True
+        except Exception as e:
+            logger.error(f"Error removing CRSI pending buy order {order_id}: {e}")
+            return False
+
+    def get_crsi_session_state(self, symbol: str) -> dict:
+        if not self._initialized:
+            return {}
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM crsi_session_state WHERE symbol = ?", (symbol,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return {
+                    "symbol": row["symbol"],
+                    "last_eval_date": row["last_eval_date"],
+                    "entry_date": row["entry_date"]
+                }
+            return {}
+        except Exception as e:
+            logger.error(f"Error fetching CRSI session state for {symbol}: {e}")
+            return {}
+
+    def save_crsi_session_state(self, symbol: str, last_eval_date: str = None, entry_date: str = None) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO crsi_session_state (symbol, last_eval_date, entry_date)
+                VALUES (?, ?, ?)
+                """,
+                (symbol, last_eval_date, entry_date)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully saved CRSI session state for {symbol}: LastEval={last_eval_date}, EntryDate={entry_date}")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving CRSI session state for {symbol}: {e}")
+            return False
+
+    def add_crsi_trade_history(self, symbol: str, quantity: float, buy_price: float, sell_price: float, profit: float, sell_order_id: str, holding_days: int = 0, buy_time: str = None) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO crsi_trades_history 
+                (sell_order_id, symbol, quantity, buy_price, buy_time, sell_price, sell_time, profit, holding_days, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sell_order_id,
+                    symbol,
+                    quantity,
+                    buy_price,
+                    buy_time or datetime.now().isoformat(),
+                    sell_price,
+                    datetime.now().isoformat(),
+                    profit,
+                    holding_days,
+                    "FILLED"
+                )
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully saved CRSI trade history for {symbol}. Profit: {profit:.4f}, HoldingDays: {holding_days}")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding CRSI trade history for {symbol}: {e}")
+            return False
+
+    def clear_crsi_session_state(self, symbol: str) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM crsi_session_state WHERE symbol = ?", (symbol,))
+            cursor.execute("DELETE FROM crsi_pending_buy_orders WHERE symbol = ?", (symbol,))
+            cursor.execute("DELETE FROM crsi_incomplete_orders WHERE symbol = ?", (symbol,))
+            cursor.execute("DELETE FROM crsi_trades_history WHERE symbol = ?", (symbol,))
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully cleared CRSI session state and orders for {symbol}.")
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing CRSI session state for {symbol}: {e}")
+            return False
+
 
 

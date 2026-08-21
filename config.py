@@ -63,7 +63,7 @@ def parse_ticker_item(item: dict) -> dict:
         "ticker": ticker,
         "strategy": strategy,
         "market": market,
-        "buy_mode": item.get("buy_mode", "QTY" if market == "KR" else "AMOUNT").upper(),
+        "buy_mode": item.get("buy_mode", "QTY" if market == "KR" or strategy == "CRSI" else "AMOUNT").upper(),
         "buy_qty": int(item.get("buy_qty", 1)),
         "buy_amount": float(item.get("buy_amount", 10.0)),
         "yield_target": float(item.get("yield_target", 0.02)),
@@ -88,7 +88,13 @@ def parse_ticker_item(item: dict) -> dict:
         "min_trade_amount": float(item.get("min_trade_amount", 10.0)),
         "rebalance_hour_us": int(item.get("rebalance_hour_us") or item.get("rebalance_hour") or 11),
         "target_cash_ratio": float(item.get("target_cash_ratio")) if item.get("target_cash_ratio") is not None else None,
-        "one_time_deposit": float(item.get("one_time_deposit", 0.0))
+        "one_time_deposit": float(item.get("one_time_deposit", 0.0)),
+        "rsi_buy": float(item.get("rsi_buy", 10.0)),
+        "rsi_sell": float(item.get("rsi_sell", 70.0)),
+        "sma_trend_period": int(item.get("sma_trend_period", 200)),
+        "sma_exit_period": int(item.get("sma_exit_period", 5)),
+        "max_holding_days": int(item.get("max_holding_days", 5)),
+        "eval_minute_before_close": int(item.get("eval_minute_before_close", 10))
     }
 
 def _build_configs_dict(items: list) -> dict:

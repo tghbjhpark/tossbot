@@ -50,5 +50,19 @@
     "min_trade_amount": 10.0,
     "rebalance_hour_us": 11,
     "enabled": true
+  },
+  {
+    "ticker": "QQQ",
+    "strategy": "CRSI",
+    "market": "US",
+    "buy_mode": "QTY",
+    "buy_qty": 1,
+    "rsi_buy": 10.0,
+    "rsi_sell": 70.0,
+    "sma_trend_period": 200,
+    "sma_exit_period": 5,
+    "max_holding_days": 5,
+    "eval_minute_before_close": 10,
+    "enabled": true
   }
 ]
