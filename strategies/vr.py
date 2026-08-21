@@ -227,8 +227,8 @@ class VrStrategy(BaseStrategy):
         buy_mode = self.config.get("buy_mode", "AMOUNT").upper()
 
         if valuation > v_max:
-            # Overvaluation (Breached Upper Band) -> Rebalance Sell
-            excess_amount = valuation - v_max
+            # Overvaluation (Breached Upper Band) -> Rebalance Sell down to V_target
+            excess_amount = valuation - self.v_target
             if excess_amount >= min_trade_amount and total_qty > 0:
                 sell_qty = excess_amount / current_price
                 if sell_qty > total_qty:
@@ -236,10 +236,16 @@ class VrStrategy(BaseStrategy):
                 
                 min_sell_qty = float(self.config.get("min_sell_qty", 1.0))
                 if sell_qty >= min_sell_qty:
-                    logger.info(f"VR [{self.ticker}] - Overvaluation detected (E=${valuation:.2f} > V_max=${v_max:.2f}). Selling {sell_qty:.4f} shares...")
+                    logger.info(
+                        f"VR [{self.ticker}] - Overvaluation detected (E=${valuation:.2f} > V_max=${v_max:.2f}). "
+                        f"Selling ${excess_amount:.2f} ({sell_qty:.4f} shares) to rebalance valuation down to V_target=${self.v_target:.2f}..."
+                    )
                     self._execute_vr_sell(current_price, sell_qty, excess_amount)
                 else:
-                    logger.info(f"VR [{self.ticker}] - Overvaluation detected (E=${valuation:.2f} > V_max=${v_max:.2f}) but calculated sell qty ({sell_qty:.4f}) is less than {min_sell_qty} share. Skipping sell.")
+                    logger.info(
+                        f"VR [{self.ticker}] - Overvaluation detected (E=${valuation:.2f} > V_max=${v_max:.2f}) "
+                        f"but calculated sell qty ({sell_qty:.4f}) is less than {min_sell_qty} share. Skipping sell."
+                    )
         elif valuation < v_min:
             # Undervaluation (Breached Lower Band) -> Rebalance Buy
             deficit_amount = self.v_target - valuation
