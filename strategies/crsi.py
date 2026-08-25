@@ -61,6 +61,34 @@ class CrsiStrategy(BaseStrategy):
             entry_date=self.entry_date
         )
 
+    def is_active(self) -> bool:
+        """
+        Determines if CRSI needs market data and evaluation in the current scheduler tick.
+        CRSI is active ONLY when:
+        1. There are pending buy/sell orders in-flight that need status reconciliation.
+        2. OR we are in the 10-minutes-before-close window AND have not yet evaluated today.
+        """
+        # If disabled and no pending exchange orders to reconcile, stay idle
+        if not self.config.get("enabled", True):
+            if any(o.get("exchangeOrderId") for o in self.incomplete_orders.values()):
+                return self.is_regular_market_hours()
+            return False
+
+        # 1. Active orders in-flight need reconciliation during regular market hours
+        if self.pending_buy_orders or any(o.get("exchangeOrderId") for o in self.incomplete_orders.values()):
+            return self.is_regular_market_hours()
+
+        # 2. Daily execution window check (10 mins before market close)
+        in_window, today_str = self._is_execution_time()
+        if not in_window:
+            return False
+
+        # If already evaluated today, don't query prices or re-run
+        if self.last_eval_date == today_str:
+            return False
+
+        return True
+
     def _is_execution_time(self) -> tuple[bool, str]:
         """
         Checks if current time is within the execution window (10 mins before market close)

@@ -109,6 +109,9 @@ class TradeBot:
         Checks if the trading session is active for the given strategy instance,
         distinguishing between US and Korean stock markets.
         """
+        if hasattr(strategy, "is_active") and callable(strategy.is_active):
+            return strategy.is_active()
+
         config = strategy.config
         market = config.get("market", "US").upper()
         
