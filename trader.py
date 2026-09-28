@@ -70,6 +70,9 @@ class TradeBot:
         raw_crsi_incomplete = self.db_manager.get_crsi_incomplete_orders()
         raw_crsi_pending = self.db_manager.get_crsi_pending_buy_orders()
         
+        # Load TVR data
+        raw_tvr_pending = self.db_manager.get_tvr_pending_buy_orders()
+        
         for instance_key, strategy in self.strategies.items():
             strategy_name = strategy.config.get("strategy", "GRID").upper()
             ticker = strategy.ticker
@@ -94,6 +97,11 @@ class TradeBot:
                 }
                 strategy.pending_buy_orders = {
                     oid: order for oid, order in raw_crsi_pending.items() if order.get("symbol") == ticker
+                }
+            elif strategy_name in ["TVR", "SVR", "TARGET_VALUE", "SIMPLE_VR"]:
+                strategy.incomplete_orders = {}
+                strategy.pending_buy_orders = {
+                    oid: order for oid, order in raw_tvr_pending.items() if order.get("symbol") == ticker
                 }
             else: # GRID
                 strategy.incomplete_orders = {

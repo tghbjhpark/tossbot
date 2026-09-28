@@ -271,6 +271,45 @@ class SQLiteManager:
                     status TEXT NOT NULL
                 )
             """)
+
+            # === TVR (Target Value Rebalancing) Tables ===
+            # 16. Table for TVR session state (cycle and rebalance dates)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tvr_session_state (
+                    symbol TEXT PRIMARY KEY,
+                    cycle_count INTEGER DEFAULT 1,
+                    last_cycle_date TEXT,
+                    last_rebalance_date TEXT
+                )
+            """)
+
+            # 17. Table for TVR pending buy orders
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tvr_pending_buy_orders (
+                    order_id TEXT PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL NOT NULL,
+                    ordered_at TEXT NOT NULL,
+                    is_amount_based INTEGER DEFAULT 0,
+                    order_amount REAL DEFAULT 0.0
+                )
+            """)
+
+            # 18. Table for TVR trade history
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tvr_trades_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id TEXT,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL NOT NULL,
+                    amount REAL NOT NULL,
+                    ordered_at TEXT NOT NULL,
+                    status TEXT NOT NULL
+                )
+            """)
             
             conn.commit()
             conn.close()
@@ -1321,6 +1360,163 @@ class SQLiteManager:
         except Exception as e:
             logger.error(f"Error clearing CRSI session state for {symbol}: {e}")
             return False
+
+    # =========================================================================
+    # TVR (Target Value Rebalancing) Methods
+    # =========================================================================
+
+    def get_tvr_session_state(self, symbol: str) -> dict:
+        if not self._initialized:
+            return {}
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM tvr_session_state WHERE symbol = ?", (symbol,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return {
+                    "symbol": row["symbol"],
+                    "cycle_count": int(row["cycle_count"]),
+                    "last_cycle_date": row["last_cycle_date"],
+                    "last_rebalance_date": row["last_rebalance_date"]
+                }
+            return {}
+        except Exception as e:
+            logger.error(f"Error fetching TVR session state for {symbol}: {e}")
+            return {}
+
+    def save_tvr_session_state(self, symbol: str, cycle_count: int = 1, last_cycle_date: str = None, last_rebalance_date: str = None) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO tvr_session_state (symbol, cycle_count, last_cycle_date, last_rebalance_date)
+                VALUES (?, ?, ?, ?)
+                """,
+                (symbol, cycle_count, last_cycle_date, last_rebalance_date)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully saved TVR session state for {symbol}: Cycle={cycle_count}, LastCycleDate={last_cycle_date}, LastRebalanceDate={last_rebalance_date}")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving TVR session state for {symbol}: {e}")
+            return False
+
+    def clear_tvr_session_state(self, symbol: str) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM tvr_session_state WHERE symbol = ?", (symbol,))
+            cursor.execute("DELETE FROM tvr_pending_buy_orders WHERE symbol = ?", (symbol,))
+            cursor.execute("DELETE FROM tvr_trades_history WHERE symbol = ?", (symbol,))
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully cleared TVR session state and records for {symbol}.")
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing TVR session state for {symbol}: {e}")
+            return False
+
+    def get_tvr_pending_buy_orders(self) -> dict:
+        if not self._initialized:
+            return {}
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM tvr_pending_buy_orders")
+            rows = cursor.fetchall()
+            conn.close()
+            orders = {}
+            for row in rows:
+                oid = row["order_id"]
+                orders[oid] = {
+                    "orderId": oid,
+                    "symbol": row["symbol"],
+                    "quantity": float(row["quantity"]),
+                    "price": float(row["price"]),
+                    "orderedAt": row["ordered_at"],
+                    "isAmountBased": bool(row["is_amount_based"]),
+                    "orderAmount": float(row["order_amount"])
+                }
+            return orders
+        except Exception as e:
+            logger.error(f"Error fetching TVR pending buy orders: {e}")
+            return {}
+
+    def add_tvr_pending_buy_order(self, order_id: str, symbol: str, quantity: float, price: float, is_amount_based: bool = False, order_amount: float = 0.0) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO tvr_pending_buy_orders (order_id, symbol, quantity, price, ordered_at, is_amount_based, order_amount)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (order_id, symbol, quantity, price, datetime.now().isoformat(), 1 if is_amount_based else 0, order_amount)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully added TVR pending buy order {order_id} for {symbol} to SQLite.")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding TVR pending buy order {order_id}: {e}")
+            return False
+
+    def remove_tvr_pending_buy_order(self, order_id: str) -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM tvr_pending_buy_orders WHERE order_id = ?", (order_id,))
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully removed TVR pending buy order {order_id} from SQLite.")
+            return True
+        except Exception as e:
+            logger.error(f"Error removing TVR pending buy order {order_id}: {e}")
+            return False
+
+    def add_tvr_trade_history(self, order_id: str, symbol: str, side: str, quantity: float, price: float, amount: float, status: str = "FILLED") -> bool:
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO tvr_trades_history 
+                (order_id, symbol, side, quantity, price, amount, ordered_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    order_id,
+                    symbol,
+                    side.upper(),
+                    quantity,
+                    price,
+                    amount,
+                    datetime.now().isoformat(),
+                    status
+                )
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully saved TVR trade history for {symbol} ({side.upper()} {quantity:.4f} shares @ ${price:.2f}, total=${amount:.2f}).")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding TVR trade history for {symbol}: {e}")
+            return False
+
 
 
 

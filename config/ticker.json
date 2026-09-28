@@ -64,5 +64,16 @@
     "max_holding_days": 5,
     "eval_minute_before_close": 10,
     "enabled": true
+  },
+  {
+    "ticker": "NVDA",
+    "strategy": "TVR",
+    "market": "US",
+    "target_value": 1000.0,
+    "cycle": 10,
+    "band": 0.10,
+    "buy_mode": "AMOUNT",
+    "min_trade_amount": 10.0,
+    "enabled": false
   }
 ]

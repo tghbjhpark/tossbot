@@ -3,12 +3,17 @@ from strategies.grid import GridStrategy
 from strategies.dca import DcaStrategy
 from strategies.vr import VrStrategy
 from strategies.crsi import CrsiStrategy
+from strategies.tvr import TvrStrategy
 
 STRATEGY_MAP = {
     "GRID": GridStrategy,
     "DCA": DcaStrategy,
     "VR": VrStrategy,
     "CRSI": CrsiStrategy,
+    "TVR": TvrStrategy,
+    "SVR": TvrStrategy,
+    "TARGET_VALUE": TvrStrategy,
+    "SIMPLE_VR": TvrStrategy,
 }
 
 def get_strategy_class(strategy_name: str):

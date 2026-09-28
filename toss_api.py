@@ -281,3 +281,41 @@ class TossAPIClient:
         logger.info(f"Cancelling order {order_id} via API...")
         res = self._request("POST", f"/api/v1/orders/{order_id}/cancel", include_account=True, json={})
         return res.get("result", {})
+
+    def get_holdings(self, symbol: str = None) -> dict:
+        """
+        Fetches holding stock information.
+        Endpoint: GET /api/v1/holdings
+        """
+        params = {}
+        if symbol:
+            params["symbol"] = symbol
+        res = self._request("GET", "/api/v1/holdings", include_account=True, params=params)
+        return res.get("result", {})
+
+    def get_holding_quantity(self, ticker: str) -> float:
+        """
+        Fetches currently held quantity for a given ticker from /api/v1/holdings.
+        Returns 0.0 if the ticker is not found in holdings.
+        """
+        try:
+            res = self.get_holdings(symbol=ticker)
+            items = res.get("items", [])
+            for item in items:
+                if item.get("symbol") == ticker:
+                    qty_str = item.get("quantity", "0")
+                    return float(qty_str) if qty_str else 0.0
+            return 0.0
+        except Exception as e:
+            logger.error(f"Error querying holding quantity for {ticker}: {e}")
+            raise e
+
+    def get_sellable_quantity(self, ticker: str) -> float:
+        """
+        Fetches sellable quantity for a given ticker from /api/v1/sellable-quantity.
+        """
+        params = {"symbol": ticker}
+        res = self._request("GET", "/api/v1/sellable-quantity", include_account=True, params=params)
+        qty_str = res.get("result", {}).get("sellableQuantity", "0")
+        return float(qty_str) if qty_str else 0.0
+

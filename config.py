@@ -94,7 +94,11 @@ def parse_ticker_item(item: dict) -> dict:
         "sma_trend_period": int(item.get("sma_trend_period", 200)),
         "sma_exit_period": int(item.get("sma_exit_period", 5)),
         "max_holding_days": int(item.get("max_holding_days", 5)),
-        "eval_minute_before_close": int(item.get("eval_minute_before_close", 10))
+        "eval_minute_before_close": int(item.get("eval_minute_before_close", 10)),
+        "target_value": float(item["target_value"]) if item.get("target_value") is not None else (float(item["v_target"]) if item.get("v_target") is not None else None),
+        "cycle": int(item["cycle"]) if item.get("cycle") is not None else (int(item["cycle_days"]) if item.get("cycle_days") is not None else 10),
+        "band": float(item["band"]) if item.get("band") is not None else (float(item["band_rate"]) if item.get("band_rate") is not None else 0.10),
+        "rebalance_delay_minutes": int(item.get("rebalance_delay_minutes", 20))
     }
 
 def _build_configs_dict(items: list) -> dict:

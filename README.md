@@ -46,7 +46,21 @@
 
 ---
 
-### 4. 공통 핵심 기능 (Standby Sell & 쿨다운)
+### 4. 타겟 밸류 리밸런싱 전략 (`TVR`)
+복잡한 현금 풀(Pocket) 개념 없이, 고정된 목표 평가액(`target_value`)과 주기(`cycle`), 밴드(`band`) 3가지 핵심 파라미터로만 간결하게 자산을 리밸런싱하는 전략입니다.
+
+* **토스 증권사 실시간 잔고 직접 조회**: 로컬 DB 추정치가 아닌 토스 공식 OpenAPI(`GET /api/v1/holdings`)를 직접 호출하여 실제 계좌의 보유 수량을 정확하게 반영합니다.
+* **장 시작 20분 후 리밸런싱**: 개장 직후의 급격한 변동성을 피해 미국장(09:50 EST) 및 한국장(09:20 KST) 기준으로 장 시작 후 정확히 20분 뒤에 리밸런싱 검사를 시도합니다.
+* **주기(`cycle`) 기반 밴드 이탈 판정**:
+  * 설정된 `cycle` 일수(예: 10일)가 경과했을 때 현재 평가액 $E = \text{수량} \times \text{현재가}$를 계산합니다.
+  * **과평가 ($E > \text{target\_value} \times (1 + \text{band})$)**: 초과분만큼 주식을 매도하여 목표 평가액으로 복귀.
+  * **저평가 ($E < \text{target\_value} \times (1 - \text{band})$)**: 부족분만큼 주식을 매수하여 목표 평가액으로 복귀.
+  * **밴드 이내**: 불필요한 매매 없이 사이클을 완료하고 다음 주기로 진행.
+* **포켓 현금 풀 배제**: 기존 VR과 달리 현금 풀(Pocket)이나 G-Factor 공식이 없으며, 설정 파일에서 `target_value`를 변경하면 다음 주기 도달 시 변경된 새로운 목표 평가액에 즉시 맞춰집니다.
+
+---
+
+### 5. 공통 핵심 기능 (Standby Sell & 쿨다운)
 * **가상 매도 대기 (Standby Sell)**: 매수 체결 시 증권사에 매도 주문을 즉시 전송하지 않고 DB/메모리에 가상 대기 상태(`isSynthetic`)로 보관하다가, 목표가 도달 시에만 실시간 매도를 실행합니다. (국내 주식 양방향 주문 제한 우회 및 미국 주식 마켓 전환기 매도 주문 유실 문제 완벽 해결)
 * **동적 설정 리로드 (Dynamic Reload)**: 봇 실행 중 `config/ticker.json` 파일을 수정하더라도 봇 재시작 없이 실시간으로 설정이 자동 적용됩니다.
 
@@ -65,6 +79,8 @@ TossTradeBot/
 │   ├── grid.py            # GridStrategy (그리드 전략)
 │   ├── dca.py             # DcaStrategy (무한매수 응용 전략)
 │   ├── vr.py              # VrStrategy (밸류 리밸런싱 전략)
+│   ├── crsi.py            # CrsiStrategy (단기 스윙 전략)
+│   ├── tvr.py             # TvrStrategy (타겟 밸류 리밸런싱 전략)
 │   └── __init__.py        # 전략 팩토리 (Strategy Factory)
 ├── config/
 │   └── ticker.json        # 종목별 상세 매매 전략 설정 파일
@@ -156,8 +172,8 @@ docker logs -f toss-trading-bot
 ### 상세 필드 명세
 
 #### 공통 필드
-* **`ticker`** (String): 매매할 종목 티커/단축코드 (예: `TSLL`, `TQQQ`, `SOXL`, `0195S0`).
-* **`strategy`** (String): 전략 종류 (`GRID`, `DCA`, `VR`).
+* **`ticker`** (String): 매매할 종목 티커/단축코드 (예: `TSLL`, `TQQQ`, `SOXL`, `0195S0`, `NVDA`).
+* **`strategy`** (String): 전략 종류 (`GRID`, `DCA`, `VR`, `CRSI`, `TVR`).
 * **`market`** (String): 시장 구분 (`US` - 미국주식, `KR` - 한국주식).
 * **`buy_mode`** (String): 매수 주문 방식 (`AMOUNT` - 금액 지정 소수점 매수, `QTY` - 온주 수량 지정 매수).
 * **`buy_amount`** (Float): `buy_mode`가 `AMOUNT`일 때 1회당 매수 금액.
@@ -190,6 +206,13 @@ docker logs -f toss-trading-bot
 * **`target_cash_ratio`** (Float, Optional): 목표 현금 비율 (예: `0.30` = 30%). 현금 과도 축적 시 V 목표가를 상향시켜 현금 비율을 자동 조절.
 * **`one_time_deposit`** (Float, Optional): 1회성 여유 자금 추가금. 설정 시 현금 풀에 즉시 합산되고 `0.0`으로 자동 리셋.
 
+#### TVR 전략 전용 필드
+* **`target_value`** (Float, 필수): 목표 포트폴리오 평가금액 $T$ (예: `1000.0`이면 $1,000 / 국내장은 원화 금액).
+* **`cycle`** (Integer, 기본값 `10`): 리밸런싱 주기 일수 (예: `10`이면 10일마다, `1`이면 매 거래일마다 검사).
+* **`band`** (Float, 기본값 `0.10`): 이탈 허용 밴드 비율 (예: `0.10`이면 $\pm 10\%$).
+* **`rebalance_delay_minutes`** (Integer, 기본값 `20`): 정규장 개장 후 리밸런싱 시도 대기 시간(분).
+* **`min_trade_amount`** (Float, 기본값 `10.0`): 최소 리밸런싱 매매 허들 금액 ($10).
+
 ---
 
 ## 📊 SQLite 데이터베이스 및 이력 관리
@@ -197,11 +220,11 @@ docker logs -f toss-trading-bot
 데이터베이스는 호스트의 `data/toss_trade_bot.db`에 안전하게 보존됩니다.
 
 ### 주요 테이블 구조
-1. **`pending_buy_orders` / `dca_pending_buy_orders` / `vr_pending_buy_orders`**: 미체결 매수 주문 트래킹 테이블.
-2. **`incomplete_orders` / `dca_incomplete_orders` / `vr_incomplete_orders`**: 매수 체결 완료된 거래별 가상 매도 대기(Standby) 및 보유 내역.
-3. **`dca_session_state` / `vr_session_state`**: 전략별 세션 진행 상태 및 밸류/현금 변수 저장.
+1. **`pending_buy_orders` / `dca_pending_buy_orders` / `vr_pending_buy_orders` / `tvr_pending_buy_orders`**: 미체결 매수 주문 트래킹 테이블.
+2. **`incomplete_orders` / `dca_incomplete_orders` / `vr_incomplete_orders` / `crsi_incomplete_orders`**: 매수 체결 완료된 거래별 가상 매도 대기(Standby) 및 보유 내역. (TVR은 토스 증권사 실시간 잔고를 직접 사용하므로 미사용)
+3. **`dca_session_state` / `vr_session_state` / `crsi_session_state` / `tvr_session_state`**: 전략별 세션 진행 상태 및 사이클/날짜 저장.
 4. **`dca_session_buys_history`**: 완료된 DCA 세션의 회차별 매수 상세 이력 아카이빙 테이블 (`session_id` 매핑).
-5. **`trades_history` / `dca_trades_history` / `vr_trades_history`**: 최종 완료된 매도 정산 역사 및 실현 손익 테이블.
+5. **`trades_history` / `dca_trades_history` / `vr_trades_history` / `crsi_trades_history` / `tvr_trades_history`**: 최종 완료된 매매 정산 역사 및 실현 손익 테이블.
 
 ### 실현 손익 조회 (SQLite CLI)
 
