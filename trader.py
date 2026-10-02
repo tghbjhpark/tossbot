@@ -225,7 +225,13 @@ class TradeBot:
                 strategy_name = strategy.config.get("strategy", "GRID")
                 logger.info(f"Processing Strategy [{strategy_name}] | Instance: {key} | Ticker: {strategy.ticker} | Live Price: {price:.2f}")
                 
-                strategy.evaluate(price)
+                try:
+                    strategy.evaluate(price)
+                except Exception as strat_err:
+                    logger.error(
+                        f"Error evaluating strategy instance [{key}] ({strategy_name} on {strategy.ticker}): {strat_err}",
+                        exc_info=True
+                    )
                 
             logger.info("Completed batch trading iteration.")
             

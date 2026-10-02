@@ -1,6 +1,6 @@
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 from strategies.base import BaseStrategy
@@ -41,6 +41,8 @@ class TvrStrategy(BaseStrategy):
             self.last_cycle_date = None
             self.last_rebalance_date = None
             self._save_session_state()
+
+        self.buy_failure_cooldown_until = None
 
         target_val = self.get_target_value()
         cycle = self.get_cycle()
@@ -290,11 +292,25 @@ class TvrStrategy(BaseStrategy):
             # Undervalued: Buy deficit to bring valuation up to target_val
             deficit_amount = target_val - valuation
             if deficit_amount >= min_trade:
+                if self.buy_failure_cooldown_until and datetime.now() < self.buy_failure_cooldown_until:
+                    logger.info(
+                        f"TVR [{self.ticker}] - Undervaluation detected (E=${valuation:.2f} < V_min=${v_min:.2f}), "
+                        f"but buy cooldown active until {self.buy_failure_cooldown_until.strftime('%H:%M:%S')} due to prior order failure. Skipping."
+                    )
+                    return
                 logger.info(
                     f"TVR [{self.ticker}] - Undervaluation detected (E=${valuation:.2f} < V_min=${v_min:.2f}). "
                     f"Buying ${deficit_amount:.2f} to restore target value ${target_val:.2f}..."
                 )
-                self._execute_tvr_buy(current_price, deficit_amount)
+                success = self._execute_tvr_buy(current_price, deficit_amount)
+                if not success:
+                    self.buy_failure_cooldown_until = datetime.now() + timedelta(minutes=5)
+                    logger.warning(
+                        f"TVR [{self.ticker}] - Buy order failed. Set 5-minute cooldown until {self.buy_failure_cooldown_until.strftime('%H:%M:%S')}."
+                    )
+                    return
+                else:
+                    self.buy_failure_cooldown_until = None
             else:
                 logger.info(f"TVR [{self.ticker}] - Deficit amount ${deficit_amount:.2f} below min trade ${min_trade:.2f}. Skipping trade.")
 
@@ -309,74 +325,91 @@ class TvrStrategy(BaseStrategy):
         self._save_session_state()
         logger.info(f"TVR [{self.ticker}] - Advanced to Cycle #{self.cycle_count}. Next rebalance in {self.get_cycle()} days.")
 
-    def _execute_tvr_buy(self, current_price: float, buy_amount: float):
+    def _execute_tvr_buy(self, current_price: float, buy_amount: float) -> bool:
         """
         Executes a rebalance BUY order (AMOUNT or QTY based).
+        Returns True if order was placed successfully, False otherwise.
         """
         market = self.config.get("market", "US").upper()
         buy_mode = self.config.get("buy_mode", "AMOUNT" if market == "US" else "QTY").upper()
 
-        if buy_mode == "QTY":
-            qty = max(1, int(round(buy_amount / current_price)))
-            order_amount = qty * current_price
-            logger.info(f"TVR [{self.ticker}] Placing QTY Buy: {qty} shares @ ${current_price:.2f} (Total: ${order_amount:.2f})")
-            res = self.api_client.place_limit_order(self.ticker, "BUY", qty, current_price)
-            if res and "orderId" in res:
-                oid = res["orderId"]
-                order_data = {
-                    "orderId": oid,
-                    "symbol": self.ticker,
-                    "quantity": qty,
-                    "price": current_price,
-                    "orderedAt": datetime.now().isoformat(),
-                    "isAmountBased": False,
-                    "orderAmount": order_amount
-                }
-                self.pending_buy_orders[oid] = order_data
-                self.db_manager.add_tvr_pending_buy_order(oid, self.ticker, qty, current_price, is_amount_based=False, order_amount=order_amount)
-                self._poll_order_fill(oid, "BUY", qty, current_price, order_amount)
-        else:
-            # AMOUNT based
-            est_qty = buy_amount / current_price
-            logger.info(f"TVR [{self.ticker}] Placing AMOUNT Buy: ${buy_amount:.2f} (Est Qty: {est_qty:.4f})")
-            res = self.api_client.place_amount_market_order(self.ticker, "BUY", buy_amount)
-            if res and "orderId" in res:
-                oid = res["orderId"]
-                order_data = {
-                    "orderId": oid,
-                    "symbol": self.ticker,
-                    "quantity": est_qty,
-                    "price": current_price,
-                    "orderedAt": datetime.now().isoformat(),
-                    "isAmountBased": True,
-                    "orderAmount": buy_amount
-                }
-                self.pending_buy_orders[oid] = order_data
-                self.db_manager.add_tvr_pending_buy_order(oid, self.ticker, est_qty, current_price, is_amount_based=True, order_amount=buy_amount)
-                self._poll_order_fill(oid, "BUY", est_qty, current_price, buy_amount)
+        try:
+            if buy_mode == "QTY":
+                qty = max(1, int(round(buy_amount / current_price)))
+                order_amount = qty * current_price
+                logger.info(f"TVR [{self.ticker}] Placing QTY Buy: {qty} shares @ ${current_price:.2f} (Total: ${order_amount:.2f})")
+                res = self.api_client.place_limit_order(self.ticker, "BUY", qty, current_price)
+                if res and "orderId" in res:
+                    oid = res["orderId"]
+                    order_data = {
+                        "orderId": oid,
+                        "symbol": self.ticker,
+                        "quantity": qty,
+                        "price": current_price,
+                        "orderedAt": datetime.now().isoformat(),
+                        "isAmountBased": False,
+                        "orderAmount": order_amount
+                    }
+                    self.pending_buy_orders[oid] = order_data
+                    self.db_manager.add_tvr_pending_buy_order(oid, self.ticker, qty, current_price, is_amount_based=False, order_amount=order_amount)
+                    self._poll_order_fill(oid, "BUY", qty, current_price, order_amount)
+                    return True
+            else:
+                # AMOUNT based
+                est_qty = buy_amount / current_price
+                logger.info(f"TVR [{self.ticker}] Placing AMOUNT Buy: ${buy_amount:.2f} (Est Qty: {est_qty:.4f})")
+                res = self.api_client.place_amount_market_order(self.ticker, "BUY", buy_amount)
+                if res and "orderId" in res:
+                    oid = res["orderId"]
+                    order_data = {
+                        "orderId": oid,
+                        "symbol": self.ticker,
+                        "quantity": est_qty,
+                        "price": current_price,
+                        "orderedAt": datetime.now().isoformat(),
+                        "isAmountBased": True,
+                        "orderAmount": buy_amount
+                    }
+                    self.pending_buy_orders[oid] = order_data
+                    self.db_manager.add_tvr_pending_buy_order(oid, self.ticker, est_qty, current_price, is_amount_based=True, order_amount=buy_amount)
+                    self._poll_order_fill(oid, "BUY", est_qty, current_price, buy_amount)
+                    return True
+        except Exception as e:
+            logger.error(f"TVR [{self.ticker}] Failed to place buy order (Amount: ${buy_amount:.2f}): {e}")
+            return False
 
-    def _execute_tvr_sell(self, current_price: float, sell_qty: float, approx_sell_amount: float):
+        return False
+
+    def _execute_tvr_sell(self, current_price: float, sell_qty: float, approx_sell_amount: float) -> bool:
         """
         Executes a rebalance SELL order.
+        Returns True if order was placed successfully, False otherwise.
         """
         market = self.config.get("market", "US").upper()
         buy_mode = self.config.get("buy_mode", "AMOUNT" if market == "US" else "QTY").upper()
 
-        if buy_mode == "QTY":
-            exec_qty = float(int(sell_qty))
-            if exec_qty < 1.0:
-                logger.info(f"TVR [{self.ticker}] QTY Sell shares ({exec_qty}) < 1. Skipping.")
-                return
-            logger.info(f"TVR [{self.ticker}] Placing QTY Sell: {int(exec_qty)} shares @ ${current_price:.2f}")
-            res = self.api_client.place_limit_order(self.ticker, "SELL", int(exec_qty), current_price)
-        else:
-            exec_qty = sell_qty
-            logger.info(f"TVR [{self.ticker}] Placing MARKET Sell: {exec_qty:.4f} shares (approx ${approx_sell_amount:.2f})")
-            res = self.api_client.place_market_order(self.ticker, "SELL", exec_qty)
+        try:
+            if buy_mode == "QTY":
+                exec_qty = float(int(sell_qty))
+                if exec_qty < 1.0:
+                    logger.info(f"TVR [{self.ticker}] QTY Sell shares ({exec_qty}) < 1. Skipping.")
+                    return False
+                logger.info(f"TVR [{self.ticker}] Placing QTY Sell: {int(exec_qty)} shares @ ${current_price:.2f}")
+                res = self.api_client.place_limit_order(self.ticker, "SELL", int(exec_qty), current_price)
+            else:
+                exec_qty = sell_qty
+                logger.info(f"TVR [{self.ticker}] Placing MARKET Sell: {exec_qty:.4f} shares (approx ${approx_sell_amount:.2f})")
+                res = self.api_client.place_market_order(self.ticker, "SELL", exec_qty)
 
-        if res and "orderId" in res:
-            oid = res["orderId"]
-            self._poll_order_fill(oid, "SELL", exec_qty, current_price, approx_sell_amount)
+            if res and "orderId" in res:
+                oid = res["orderId"]
+                self._poll_order_fill(oid, "SELL", exec_qty, current_price, approx_sell_amount)
+                return True
+        except Exception as e:
+            logger.error(f"TVR [{self.ticker}] Failed to place sell order: {e}")
+            return False
+
+        return False
 
     def _poll_order_fill(self, order_id: str, side: str, expected_qty: float, expected_price: float, expected_amount: float):
         """
