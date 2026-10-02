@@ -187,11 +187,17 @@ docker logs -f toss-trading-bot
 * **`cooldown_minutes`** (Integer, Optional): 연속 매수 도달 시 대기(쿨다운) 시간(분).
 * **`fill_grid_on_rise`** (Boolean, Optional): 상승 중 익절가 부근 공백 발생 시 그리드 추격 매수 여부 (기본값 `true`).
 * **`stop_loss_count`** (Integer, Optional): 최상단 매도 포지션 손절 개수.
+* **`open_delay_minutes`** (Integer, Optional): `buy_mode`가 `QTY`일 때 정규장 시작 후 매매 개시 지연 시간(분). (기본값 `15`, 미국 09:45 EST / 한국 09:15 KST부터 매매).
+* **`close_buffer_minutes`** (Integer, Optional): `buy_mode`가 `QTY`일 때 장 마감 전 매매/청산 종료 버퍼 시간(분). (기본값 `10`, 미국 15:50 EST / 한국 15:10 KST까지 매매).
+* **정규장 거래 시간 자동 제어 (`QTY` 모드)**: 그리드 전략의 QTY 모드 역시 정규 거래 시간 내(장 시작 15분 후 ~ 장 마감 10분 전)로 제한되어 정규장 외 시간의 불필요한 시세 조회 및 주문 오동작을 방지합니다. 미체결 주문이 남아있는 경우 정규장 시간 동안 안전하게 체결 확인 및 취소(정리)를 수행합니다.
 
 #### DCA 전략 전용 필드
 * **`max_session_buys`** (Integer): 세션 내 최대 매수 회차 $N$ (기본값 `40`).
 * **`min_session_buys`** (Integer, Optional): 청산 감지를 허용할 최소 매수 회차 (기본값 `6`).
 * **`min_sell_qty`** (Float, Optional): 매도 실행을 허용할 최소 수량 (기본값 `1.0`).
+* **`open_delay_minutes`** (Integer, Optional): `buy_mode`가 `QTY`일 때 정규장 시작 후 매매 개시 지연 시간(분). (기본값 `15`, 미국 09:45 EST / 한국 09:15 KST부터 매매).
+* **`close_buffer_minutes`** (Integer, Optional): `buy_mode`가 `QTY`일 때 장 마감 전 매매/청산 종료 버퍼 시간(분). (기본값 `10`, 미국 15:50 EST / 한국 15:10 KST까지 매매).
+* **정규장 거래 시간 자동 제어 (`QTY` 모드)**: 기존 상시 24시간 작동하던 QTY 모드를 정규 거래 시간 내(장 시작 15분 후 ~ 장 마감 10분 전)로 제한하여 정규장 외 시간의 불필요한 조회 및 장외 청산 오동작을 원천 방지합니다. 미체결 주문이 남아있는 경우 정규장 시간 동안 안전하게 체결 확인 및 취소(정리)를 수행합니다.
 
 #### VR 전략 전용 필드
 * **`mode`** (String): 운용 모드 (`ACCUMULATE` - 적립식, `LUMP_SUM` - 거치식, `WITHDRAWAL` - 인출식).

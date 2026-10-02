@@ -122,6 +122,8 @@ class TradeBot:
 
         config = strategy.config
         market = config.get("market", "US").upper()
+        strategy_type = config.get("strategy", "").upper()
+        buy_mode = config.get("buy_mode", "AMOUNT").upper()
         
         if market == "KR":
             # Korea market hours check: Monday-Friday, 09:00 AM to 03:20 PM KST
@@ -131,8 +133,13 @@ class TradeBot:
             if now_kst.weekday() >= 5:
                 return False
                 
-            start_time = now_kst.replace(hour=9, minute=0, second=0, microsecond=0)
-            end_time = now_kst.replace(hour=15, minute=20, second=0, microsecond=0)
+            if strategy_type in ["DCA", "GRID"] and buy_mode == "QTY":
+                # DCA/GRID 일반 수량 주문 (QTY): 정규 거래 시작 15분 후(09:15)부터 장 마감 10분 전(15:10)까지
+                start_time = now_kst.replace(hour=9, minute=15, second=0, microsecond=0)
+                end_time = now_kst.replace(hour=15, minute=10, second=0, microsecond=0)
+            else:
+                start_time = now_kst.replace(hour=9, minute=0, second=0, microsecond=0)
+                end_time = now_kst.replace(hour=15, minute=20, second=0, microsecond=0)
             
             return start_time <= now_kst <= end_time
             
@@ -144,8 +151,12 @@ class TradeBot:
             if now_est.weekday() >= 5:
                 return False
                 
-            buy_mode = config.get("buy_mode", "AMOUNT").upper()
-            if buy_mode == "AMOUNT":
+            if strategy_type in ["DCA", "GRID"] and buy_mode == "QTY":
+                # DCA/GRID 일반 수량 주문 (QTY): 정규 거래 시작 15분 후(09:45)부터 장 마감 10분 전(15:50)까지
+                start_time = now_est.replace(hour=9, minute=45, second=0, microsecond=0)
+                end_time = now_est.replace(hour=15, minute=50, second=0, microsecond=0)
+                return start_time <= now_est <= end_time
+            elif buy_mode == "AMOUNT":
                 # 소수점 금액 주문: 09:40 ~ 14:50 (09:30 ~ 15:00 대비 앞뒤 10분 버퍼 적용)
                 start_time = now_est.replace(hour=9, minute=40, second=0, microsecond=0)
                 end_time = now_est.replace(hour=14, minute=50, second=0, microsecond=0)

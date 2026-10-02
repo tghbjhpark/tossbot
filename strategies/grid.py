@@ -1,5 +1,8 @@
 import time
 import logging
+from datetime import datetime, timedelta
+import pytz
+
 from config import update_stop_loss_count
 from strategies.base import BaseStrategy
 
@@ -11,12 +14,95 @@ class GridStrategy(BaseStrategy):
     Buys when price drops below the threshold calculated from the lowest active sell target,
     or chases upward rises to fill missing grid gaps.
     """
+    def is_active(self) -> bool:
+        """
+        Determines if Grid strategy needs evaluation in the current scheduler tick:
+        1. If disabled and no pending buy orders and no holdings to sell, remain idle.
+        2. If active orders in-flight exist, active during regular market hours for reconciliation.
+        3. Check trading window:
+           - QTY mode: Regular market hours starting 15 minutes after open, ending 10 minutes before close.
+             * US: 09:45 EST ~ 15:50 EST (Mon-Fri)
+             * KR: 09:15 KST ~ 15:10 KST (Mon-Fri)
+           - AMOUNT mode: Fractional trading window:
+             * US: 09:40 EST ~ 14:50 EST (Mon-Fri)
+             * KR: 09:00 KST ~ 14:20 KST (Mon-Fri)
+        """
+        # If disabled and no pending orders and no holdings to sell, stay idle
+        if not self.config.get("enabled", True):
+            if self.pending_buy_orders or any(o.get("exchangeOrderId") for o in self.incomplete_orders.values()):
+                return self.is_regular_market_hours()
+            if not self.incomplete_orders:
+                return False
+
+        # Active orders in-flight need reconciliation during regular market hours
+        if self.pending_buy_orders or any(o.get("exchangeOrderId") for o in self.incomplete_orders.values()):
+            return self.is_regular_market_hours()
+
+        # Check if currently within trading window
+        return self._is_trading_window()
+
+    def _is_trading_window(self) -> bool:
+        """
+        Checks if current time is within the allowed trading window:
+        - For QTY mode:
+          Regular market hours starting open_delay_minutes (default 15m) after market open,
+          closing close_buffer_minutes (default 10m) before market close.
+          * US: 09:45 ~ 15:50 EST (Monday-Friday)
+          * KR: 09:15 ~ 15:10 KST (Monday-Friday)
+        - For AMOUNT mode:
+          Fractional share trading hours:
+          * US: 09:40 ~ 14:50 EST (Monday-Friday)
+          * KR: 09:00 ~ 14:20 KST (Monday-Friday)
+        """
+        market = self.config.get("market", "US").upper()
+        buy_mode = self.config.get("buy_mode", "AMOUNT").upper()
+        open_delay_mins = int(self.config.get("open_delay_minutes", 15))
+        close_buffer_mins = int(self.config.get("close_buffer_minutes", 10))
+
+        if market == "KR":
+            tz_kr = pytz.timezone("Asia/Seoul")
+            now = datetime.now(tz_kr)
+            if now.weekday() >= 5:
+                return False
+
+            if buy_mode == "QTY":
+                open_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
+                start_time = open_time + timedelta(minutes=open_delay_mins)
+                close_time = now.replace(hour=15, minute=20, second=0, microsecond=0)
+                end_time = close_time - timedelta(minutes=close_buffer_mins)
+            else:
+                start_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
+                end_time = now.replace(hour=14, minute=20, second=0, microsecond=0)
+
+            return start_time <= now <= end_time
+        else:
+            tz_us = pytz.timezone("America/New_York")
+            now = datetime.now(tz_us)
+            if now.weekday() >= 5:
+                return False
+
+            if buy_mode == "QTY":
+                open_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
+                start_time = open_time + timedelta(minutes=open_delay_mins)
+                close_time = now.replace(hour=16, minute=0, second=0, microsecond=0)
+                end_time = close_time - timedelta(minutes=close_buffer_mins)
+            else:
+                start_time = now.replace(hour=9, minute=40, second=0, microsecond=0)
+                end_time = now.replace(hour=14, minute=50, second=0, microsecond=0)
+
+            return start_time <= now <= end_time
+
     def evaluate(self, current_price: float):
         # Step 1: Reconcile Sell Executions
         self._verify_sell_executions(current_price)
         
         # Step 2: Reconcile Pending Buy Executions
         self._verify_buy_executions()
+
+        # Check trading window (for QTY: open+15m to close-10m)
+        if not self._is_trading_window():
+            logger.debug(f"Grid Ticker [{self.ticker}] is outside trading window. Skipping new evaluations.")
+            return
 
         # Step 2.5: Check for Stop-Loss request (Regular market hours only)
         stop_loss_count = int(self.config.get("stop_loss_count", 0))

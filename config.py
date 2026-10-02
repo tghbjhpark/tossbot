@@ -75,6 +75,8 @@ def parse_ticker_item(item: dict) -> dict:
         "max_session_buys": int(item.get("max_session_buys", 40)),
         "min_session_buys": int(item.get("min_session_buys", 6)),
         "min_sell_qty": float(item.get("min_sell_qty", 1.0)),
+        "open_delay_minutes": int(item.get("open_delay_minutes", 15)),
+        "close_buffer_minutes": int(item.get("close_buffer_minutes", 10)),
         "stop_loss_count": int(item.get("stop_loss_count", 0)) if item.get("stop_loss_count") is not None else 0,
         "mode": item.get("mode", "ACCUMULATE").upper().strip(),
         "v_target": float(item["v_target"]) if item.get("v_target") is not None else None,
