@@ -60,6 +60,7 @@ class VrStrategy(BaseStrategy):
             f"G Factor: {g_factor} | Band Rate: {band_rate * 100:.1f}% | Min Trade: ${min_trade_amount:.2f} | "
             f"Daily Rebalance Hour: {rebalance_hour}:00 US ET | "
             f"Holdings: {len(self.incomplete_orders)} | Pending Buys: {len(self.pending_buy_orders)}"
+        )
         self.buy_failure_cooldown_until = None
         self._check_one_time_deposit()
 
