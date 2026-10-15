@@ -83,6 +83,14 @@ class SQLiteManager:
                 )
             """)
             
+            # 3.1 Table for GRID session state (monthly stop loss tracking)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS grid_session_state (
+                    symbol TEXT PRIMARY KEY,
+                    last_monthly_stop_loss_date TEXT
+                )
+            """)
+
             # === DCA (Phase 2) Tables ===
             # 4. Table for DCA pending buy orders
             cursor.execute("""
@@ -410,9 +418,9 @@ class SQLiteManager:
             logger.error(f"Error adding incomplete order {order_id} to SQLite: {e}")
             return False
 
-    def remove_incomplete_order(self, order_id: str, actual_sell_price: float = None) -> bool:
+    def remove_incomplete_order(self, order_id: str, actual_sell_price: float = None, status: str = "COMPLETED") -> bool:
         """
-        Deletes a sell order from SQLite and marks the matching trade history record as COMPLETED.
+        Deletes a sell order from SQLite and marks the matching trade history record as COMPLETED or STOP_LOSS.
         """
         if not self._initialized:
             logger.warning("SQLite not initialized. Skipping remove_incomplete_order.")
@@ -439,9 +447,9 @@ class SQLiteManager:
                     SET sell_price = ?, sell_time = ?, profit = ?, status = ?
                     WHERE sell_order_id = ?
                     """,
-                    (sell_price, sell_time, profit, "COMPLETED", order_id)
+                    (sell_price, sell_time, profit, status, order_id)
                 )
-                logger.info(f"Matched trade history completed for sell order {order_id}. Actual Sell Price: {sell_price:.4f}, Profit: {profit:.4f}")
+                logger.info(f"Matched trade history completed for sell order {order_id}. Actual Sell Price: {sell_price:.4f}, Profit: {profit:.4f}, Status: {status}")
             else:
                 logger.warning(f"Could not find matching incomplete order {order_id} to record in trade history.")
 
@@ -565,6 +573,88 @@ class SQLiteManager:
         except Exception as e:
             logger.error(f"Error updating quantity for {order_id}: {e}")
             return False
+
+    def get_grid_session_state(self, target_key: str) -> dict:
+        """
+        Fetches persistent session state for GRID strategy (e.g. by market 'US'/'KR' or symbol).
+        """
+        if not self._initialized:
+            return {}
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM grid_session_state WHERE symbol = ?", (target_key,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return {
+                    "symbol": row["symbol"],
+                    "target_key": row["symbol"],
+                    "last_monthly_stop_loss_date": row["last_monthly_stop_loss_date"]
+                }
+            return {}
+        except Exception as e:
+            logger.error(f"Error fetching GRID session state for {target_key}: {e}")
+            return {}
+
+    def save_grid_session_state(self, target_key: str, last_monthly_stop_loss_date: str) -> bool:
+        """
+        Saves or updates GRID session state (e.g. by market 'US'/'KR' or symbol).
+        """
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO grid_session_state (symbol, last_monthly_stop_loss_date)
+                VALUES (?, ?)
+                """,
+                (target_key, last_monthly_stop_loss_date)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully saved GRID session state for {target_key}: LastMonthlyStopLossDate={last_monthly_stop_loss_date}")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving GRID session state for {target_key}: {e}")
+            return False
+
+    def get_grid_monthly_profit(self, symbols: list[str] | str, year_month: str) -> float:
+        """
+        Calculates the net profit for GRID strategy in the specified year-month (YYYY-MM).
+        Supports either a single symbol or a list of symbols (for market-wide aggregation).
+        Excludes stop-loss trades and loss-making trades (only sums completed profitable trades: status = 'COMPLETED' and profit > 0).
+        """
+        if not self._initialized:
+            logger.warning("SQLite not initialized. Returning 0.0 for monthly profit.")
+            return 0.0
+        if isinstance(symbols, str):
+            symbols = [symbols]
+        if not symbols:
+            return 0.0
+
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            placeholders = ",".join("?" for _ in symbols)
+            query = f"""
+                SELECT COALESCE(SUM(profit), 0.0) AS total_profit
+                FROM trades_history
+                WHERE symbol IN ({placeholders})
+                  AND status = 'COMPLETED'
+                  AND profit > 0
+                  AND sell_time LIKE ?
+            """
+            params = [*symbols, f"{year_month}%"]
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+            conn.close()
+            return float(row["total_profit"]) if row and row["total_profit"] is not None else 0.0
+        except Exception as e:
+            logger.error(f"Error querying monthly profit for symbols {symbols} ({year_month}): {e}")
+            return 0.0
 
     # === DCA Specific Database Methods ===
 

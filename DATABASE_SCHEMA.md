@@ -49,6 +49,10 @@ erDiagram
         float profit
         string status
     }
+    GRID_SESSION_STATE {
+        string symbol PK
+        string last_monthly_stop_loss_date
+    }
 
     %% DCA Strategy
     DCA_PENDING_BUY_ORDERS {
@@ -267,6 +271,24 @@ erDiagram
 | `sell_time` | TEXT | NULL 허용 | - | 매도 체결 일시 | `"2026-10-02T11:15:30"` |
 | `profit` | REAL | NULL 허용 | - | **실현 순손익금** (`(sell_price - buy_price) * quantity`) | `0.3174` |
 | `status` | TEXT | NOT NULL | - | 체결 상태 (`"COMPLETED"`, `"STOP_LOSS"`) | `"COMPLETED"` |
+
+---
+
+#### ④ `grid_session_state` (그리드 세션 상태 / 마켓별 월간 손절 추적)
+- **역할**: 매월 첫 번째 거래일에 발동되는 상방 물량 손절 로직의 실행 상태(`last_monthly_stop_loss_date`)를 시장(`market`, 예: `"US"`, `"KR"`)별로 영속화하여, 동일 마켓 내에서 당월 1회 통합 실행을 보장합니다.
+- **DDL**:
+  ```sql
+  CREATE TABLE IF NOT EXISTS grid_session_state (
+      symbol TEXT PRIMARY KEY,
+      last_monthly_stop_loss_date TEXT
+  );
+  ```
+- **필드 정의**:
+
+| 컬럼명 | 타입 | 제약조건 | 기본값 | 설명 및 비즈니스 의미 | 예시값 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `symbol` | TEXT | PK | - | 시장 코드 또는 종목 식별자 | `"US"` 또는 `"KR"` |
+| `last_monthly_stop_loss_date` | TEXT | NULL 허용 | - | 최근 월간 통합 손절이 실행 완료된 일자 (`YYYY-MM-DD`) | `"2026-10-01"` |
 
 ---
 

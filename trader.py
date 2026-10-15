@@ -174,6 +174,209 @@ class TradeBot:
             return False
         return any(self.is_market_active_for_strategy(s) for s in matching_strats)
 
+    def is_first_trading_day_of_month(self, now_dt: datetime) -> bool:
+        """
+        Checks if the given market datetime represents the first trading day of the month.
+        Trading days are Monday through Friday, skipping weekends and standard New Year's holiday (Jan 1).
+        """
+        if now_dt.weekday() >= 5:
+            return False
+
+        for day in range(1, now_dt.day):
+            if now_dt.month == 1 and day == 1:
+                continue
+            check_date = now_dt.replace(day=day)
+            if check_date.weekday() < 5:
+                return False
+        return True
+
+    def process_monthly_grid_stop_loss(self, prices: dict):
+        """
+        Market-wide unified monthly stop loss for GRID strategy positions:
+        1. Executed once per month on the first trading day of each market (US / KR).
+        2. Executed prior to evaluating regular grid buying triggers.
+        3. Aggregates previous month's net profit across all grid tickers in the same market (excluding stop-loss trades).
+        4. Caps cumulative stop loss to 10% of the aggregate net profit.
+        5. Pools all aged (>= 30 days) positions incurring loss across all grid tickers in that market,
+           sorted by ordered_at ascending (oldest first across tickers).
+        6. Sells positions sequentially until cumulative realized loss reaches or exceeds the 10% budget.
+        """
+        markets = ["US", "KR"]
+        for market in markets:
+            tz = pytz.timezone("Asia/Seoul" if market == "KR" else "America/New_York")
+            now_market = datetime.now(tz)
+
+            # 1. First trading day of the month check
+            if not self.is_first_trading_day_of_month(now_market):
+                continue
+
+            # 2. Check if monthly stop loss was already executed this month for this market
+            today_str = now_market.strftime("%Y-%m-%d")
+            current_month_str = now_market.strftime("%Y-%m")
+            session_state = self.db_manager.get_grid_session_state(market)
+            last_date = session_state.get("last_monthly_stop_loss_date", "")
+            if last_date and last_date.startswith(current_month_str):
+                continue
+
+            # 3. Find all GRID strategy instances in this market
+            market_grid_strats = [
+                s for s in self.strategies.values()
+                if s.config.get("strategy", "GRID").upper() == "GRID"
+                and s.config.get("market", "US").upper() == market
+                and s.config.get("monthly_stop_loss_enabled", True)
+            ]
+            if not market_grid_strats:
+                continue
+
+            # Check if current time is within regular market hours for this market
+            if not any(s.is_regular_market_hours() for s in market_grid_strats):
+                continue
+
+            # 4. Reconcile existing orders for all market grid strategies first
+            for s in market_grid_strats:
+                cur_p = prices.get(s.ticker)
+                if cur_p is not None:
+                    s._verify_sell_executions(cur_p)
+                s._verify_buy_executions()
+
+            # 5. Calculate previous month (YYYY-MM)
+            if now_market.month == 1:
+                prev_year = now_market.year - 1
+                prev_month = 12
+            else:
+                prev_year = now_market.year
+                prev_month = now_market.month - 1
+            prev_month_str = f"{prev_year:04d}-{prev_month:02d}"
+
+            # 6. Aggregate previous month's net profit across all grid tickers in this market
+            grid_symbols = list(set(s.ticker for s in market_grid_strats))
+            market_profit = self.db_manager.get_grid_monthly_profit(grid_symbols, prev_month_str)
+
+            logger.info(
+                f"Market [{market}] - Unified Monthly Stop Loss Check: First trading day of {current_month_str} ({today_str}). "
+                f"Tickers: {grid_symbols} | Previous Month ({prev_month_str}) Aggregate Grid Profit: {market_profit:.2f}"
+            )
+
+            if market_profit <= 0:
+                logger.info(
+                    f"Market [{market}] - Total grid profit for {prev_month_str} is {market_profit:.2f} <= 0. "
+                    f"No stop loss budget available. Marking monthly stop loss as completed."
+                )
+                self.db_manager.save_grid_session_state(market, today_str)
+                continue
+
+            # 7. Calculate loss budget (10% of aggregate grid profit in market)
+            loss_rate = 0.10
+            min_holding_days = 30
+            loss_budget = market_profit * loss_rate
+
+            logger.info(
+                f"Market [{market}] - Monthly Stop Loss Active! Aggregate Profit: {market_profit:.2f} | "
+                f"10% Loss Budget: {loss_budget:.2f} | Min Holding Days: {min_holding_days}"
+            )
+
+            # 8. Pool all eligible positions (holding >= 30 days and in loss) across all tickers in this market
+            now_utc = datetime.now(pytz.utc).replace(tzinfo=None)
+            candidates = []
+
+            for strat in market_grid_strats:
+                ticker_price = prices.get(strat.ticker)
+                if ticker_price is None or ticker_price <= 0:
+                    continue
+
+                for order_id, order in list(strat.incomplete_orders.items()):
+                    ordered_at_str = order.get("orderedAt") or order.get("ordered_at")
+                    ordered_dt = strat._parse_order_time(ordered_at_str)
+                    if not ordered_dt:
+                        continue
+
+                    holding_days = (now_utc - ordered_dt).total_seconds() / 86400.0
+                    if holding_days < min_holding_days:
+                        continue
+
+                    buy_price = float(order.get("buyPrice") or order.get("buy_price", 0.0))
+                    qty = float(order.get("quantity", 0.0))
+
+                    if buy_price <= ticker_price:
+                        continue
+
+                    expected_loss = (buy_price - ticker_price) * qty
+                    candidates.append({
+                        "strategy": strat,
+                        "order": order,
+                        "order_id": order_id,
+                        "symbol": strat.ticker,
+                        "buy_price": buy_price,
+                        "current_price": ticker_price,
+                        "qty": qty,
+                        "ordered_dt": ordered_dt,
+                        "holding_days": holding_days,
+                        "expected_loss": expected_loss
+                    })
+
+            if not candidates:
+                logger.info(
+                    f"Market [{market}] - No aged positions (>= {min_holding_days} days) incurring loss "
+                    f"across any grid tickers. Monthly stop loss completed."
+                )
+                self.db_manager.save_grid_session_state(market, today_str)
+                continue
+
+            # Sort positions across all tickers by ordered_dt ascending (가장 오래된 매물부터)
+            candidates.sort(key=lambda x: x["ordered_dt"])
+            logger.info(
+                f"Market [{market}] - Found {len(candidates)} eligible aged position(s) across all grid tickers."
+            )
+
+            # 9. Sequentially execute stop loss across tickers until cumulative loss >= loss_budget
+            total_loss = 0.0
+            for cand in candidates:
+                strat = cand["strategy"]
+                order = cand["order"]
+                order_id = cand["order_id"]
+                buy_price = cand["buy_price"]
+                ticker_price = cand["current_price"]
+                symbol = cand["symbol"]
+
+                logger.info(
+                    f"Market [{market}] - Processing Stop Loss for [{symbol}] Order: {order_id} | "
+                    f"Holding: {cand['holding_days']:.1f}d | Buy: {buy_price:.2f} | Current: {ticker_price:.2f} | "
+                    f"Expected Loss: {cand['expected_loss']:.2f}"
+                )
+
+                actual_sell_price, filled_qty = strat._execute_single_stop_loss(order, ticker_price)
+
+                if filled_qty > 0 and actual_sell_price is not None:
+                    realized_loss = (buy_price - actual_sell_price) * filled_qty
+                    if realized_loss > 0:
+                        total_loss += realized_loss
+                    logger.info(
+                        f"Market [{market}] - Stop Loss filled for [{symbol}] {order_id} at {actual_sell_price:.2f}. "
+                        f"Realized Loss: {realized_loss:.2f} | Cumulative Loss: {total_loss:.2f} / Budget: {loss_budget:.2f}"
+                    )
+                else:
+                    logger.warning(f"Market [{market}] - Stop Loss order [{symbol}] {order_id} was not filled.")
+
+                # 매도 후 손실금액이 이전월 수익의 10%를 넘으면 중단
+                if total_loss >= loss_budget:
+                    logger.info(
+                        f"Market [{market}] - Cumulative stop loss ({total_loss:.2f}) reached or exceeded "
+                        f"10% profit budget ({loss_budget:.2f}). Stopping monthly stop loss for {market} market."
+                    )
+                    break
+                else:
+                    logger.info(
+                        f"Market [{market}] - Cumulative loss ({total_loss:.2f}) < budget ({loss_budget:.2f}). "
+                        f"Proceeding to check next oldest position across tickers..."
+                    )
+
+            # 10. Mark execution complete for this market
+            self.db_manager.save_grid_session_state(market, today_str)
+            logger.info(
+                f"Market [{market}] - Unified monthly stop loss completed for {today_str}. "
+                f"Total realized loss: {total_loss:.2f}."
+            )
+
     def run_one_iteration(self):
         """
         Executes one iteration of trading logic for all active strategy instances.
@@ -213,6 +416,9 @@ class TradeBot:
             logger.info(f"Starting batch trading iteration for unique tickers: {unique_active_tickers}")
             
             prices = self.api_client.get_current_prices(unique_active_tickers)
+
+            # Unified monthly stop loss for GRID strategies (executed prior to regular buys)
+            self.process_monthly_grid_stop_loss(prices)
             
             # Run each active strategy instance sequentially
             for key in active_keys:
