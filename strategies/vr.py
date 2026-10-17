@@ -22,7 +22,7 @@ class VrStrategy(BaseStrategy):
 
     def initialize_state(self):
         """
-        Loads persistent VR session state (V, pocket_cash, cycle info, holdings_qty) from SQLite database.
+        Loads persistent VR session state (V, pocket_cash, cycle info, holdings_qty, total_deposit) from SQLite database.
         Initializes default values from config if state does not exist in DB.
         """
         self.symbol = self.ticker
@@ -39,6 +39,7 @@ class VrStrategy(BaseStrategy):
             self.last_cycle_date = state.get("last_cycle_date")
             self.last_rebalance_date = state.get("last_rebalance_date")
             self.holdings_qty = float(state.get("holdings_qty", 0.0))
+            self.total_deposit = float(state.get("total_deposit", 0.0))
         else:
             self.v_target = float(config_v) if config_v is not None else 500.0
             self.pocket_cash = float(config_pocket) if config_pocket is not None else 500.0
@@ -48,6 +49,7 @@ class VrStrategy(BaseStrategy):
             self.last_cycle_date = now_str
             self.last_rebalance_date = None
             self.holdings_qty = 0.0
+            self.total_deposit = 0.0
             self._save_session_state()
 
         mode = self.config.get("mode", "ACCUMULATE")
@@ -58,8 +60,8 @@ class VrStrategy(BaseStrategy):
 
         logger.info(
             f"VR Ticker [{self.ticker}] | Mode: {mode} | V Target: ${self.v_target:.2f} | "
-            f"Pocket Cash: ${self.pocket_cash:.2f} | Cycle: {self.cycle_count} | "
-            f"Holdings: {self.holdings_qty:.4f} shares | "
+            f"Pocket Cash: ${self.pocket_cash:.2f} | Total Deposit: ${self.total_deposit:.2f} | "
+            f"Cycle: {self.cycle_count} | Holdings: {self.holdings_qty:.4f} shares | "
             f"G Factor: {g_factor} | Band Rate: {band_rate * 100:.1f}% | Min Trade: ${min_trade_amount:.2f} | "
             f"Daily Rebalance Hour: {rebalance_hour}:00 US ET | "
             f"Pending Buys: {len(self.pending_buy_orders)}"
@@ -69,15 +71,26 @@ class VrStrategy(BaseStrategy):
 
     def _check_one_time_deposit(self):
         """
-        Checks if one_time_deposit is set in config. If > 0, adds it to pocket_cash without modifying v_target
-        and resets one_time_deposit in config and ticker.json to 0.0.
+        Checks if one_time_deposit is set in config. If > 0, adds it to pocket_cash and total_deposit without modifying v_target
+        and resets one_time_deposit in config and ticker.json to 0.0. Records entry in vr_deposit_history.
         """
         extra_deposit = float(self.config.get("one_time_deposit", 0.0))
         if extra_deposit > 0:
             old_pocket = self.pocket_cash
             self.pocket_cash += extra_deposit
+            self.total_deposit += extra_deposit
             self.config["one_time_deposit"] = 0.0
             self._save_session_state()
+
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.db_manager.add_vr_deposit_history(
+                symbol=self.ticker,
+                transfer_type="DEPOSIT",
+                amount=extra_deposit,
+                transfer_date=now_str,
+                note="1회성 추가 입금 (one_time_deposit)"
+            )
+
             try:
                 from config import reset_one_time_deposit
                 reset_one_time_deposit(self.instance_key if hasattr(self, "instance_key") else self.ticker)
@@ -85,7 +98,8 @@ class VrStrategy(BaseStrategy):
                 logger.error(f"Error resetting one_time_deposit in config: {e}")
             logger.info(
                 f"★★ VR [{self.ticker}] - Applied 1-time extra deposit ${extra_deposit:.2f}! "
-                f"Pocket Cash: ${old_pocket:.2f} -> ${self.pocket_cash:.2f} (V target unchanged at ${self.v_target:.2f})."
+                f"Pocket Cash: ${old_pocket:.2f} -> ${self.pocket_cash:.2f} | "
+                f"Total Deposit: ${self.total_deposit:.2f} (V target unchanged at ${self.v_target:.2f})."
             )
 
     def _save_session_state(self):
@@ -99,7 +113,8 @@ class VrStrategy(BaseStrategy):
             cycle_count=self.cycle_count,
             last_cycle_date=self.last_cycle_date,
             last_rebalance_date=self.last_rebalance_date,
-            holdings_qty=self.holdings_qty
+            holdings_qty=self.holdings_qty,
+            total_deposit=self.total_deposit
         )
 
     def evaluate(self, current_price: float):
@@ -160,12 +175,22 @@ class VrStrategy(BaseStrategy):
         g_factor = float(self.config.get("g_factor", 10.0)) if self.config.get("g_factor") is not None else 10.0
         deposit = float(self.config.get("cycle_deposit", 0.0))
         withdrawal = float(self.config.get("cycle_withdrawal", 0.0))
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         old_v = self.v_target
         old_pocket = self.pocket_cash
 
         if mode == "ACCUMULATE":
             self.pocket_cash += deposit
+            if deposit > 0:
+                self.total_deposit += deposit
+                self.db_manager.add_vr_deposit_history(
+                    symbol=self.ticker,
+                    transfer_type="DEPOSIT",
+                    amount=deposit,
+                    transfer_date=now_str,
+                    note=f"Cycle #{self.cycle_count} 정기 적립 (cycle_deposit)"
+                )
             if g_factor > 0:
                 v_target_legacy = old_v + (self.pocket_cash / g_factor) + deposit
             else:
@@ -177,6 +202,15 @@ class VrStrategy(BaseStrategy):
                 v_target_legacy = old_v * (1.0 + growth_rate)
         elif mode == "WITHDRAWAL":
             self.pocket_cash = max(0.0, old_pocket - withdrawal)
+            if withdrawal > 0:
+                self.total_deposit = max(0.0, self.total_deposit - withdrawal)
+                self.db_manager.add_vr_deposit_history(
+                    symbol=self.ticker,
+                    transfer_type="WITHDRAWAL",
+                    amount=withdrawal,
+                    transfer_date=now_str,
+                    note=f"Cycle #{self.cycle_count} 정기 인출 (cycle_withdrawal)"
+                )
             if g_factor > 0:
                 v_target_legacy = max(0.0, old_v + (self.pocket_cash / g_factor) - withdrawal)
             else:
@@ -204,7 +238,8 @@ class VrStrategy(BaseStrategy):
         logger.info(
             f"VR [{self.ticker}] - Advanced to Cycle #{self.cycle_count}! "
             f"V Target: ${old_v:.2f} -> ${self.v_target:.2f} (Legacy V: ${v_target_legacy:.2f}) | "
-            f"Pocket Cash: ${old_pocket:.2f} -> ${self.pocket_cash:.2f} (G={g_factor})"
+            f"Pocket Cash: ${old_pocket:.2f} -> ${self.pocket_cash:.2f} (G={g_factor}) | "
+            f"Total Deposit: ${self.total_deposit:.2f}"
         )
         self._save_session_state()
 

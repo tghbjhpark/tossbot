@@ -210,7 +210,8 @@ class SQLiteManager:
                     cycle_count INTEGER DEFAULT 1,
                     last_cycle_date TEXT,
                     last_rebalance_date TEXT,
-                    holdings_qty REAL NOT NULL DEFAULT 0.0
+                    holdings_qty REAL NOT NULL DEFAULT 0.0,
+                    total_deposit REAL NOT NULL DEFAULT 0.0
                 )
             """)
 
@@ -218,6 +219,8 @@ class SQLiteManager:
             vr_columns = [column[1] for column in cursor.fetchall()]
             if "holdings_qty" not in vr_columns:
                 cursor.execute("ALTER TABLE vr_session_state ADD COLUMN holdings_qty REAL NOT NULL DEFAULT 0.0")
+            if "total_deposit" not in vr_columns:
+                cursor.execute("ALTER TABLE vr_session_state ADD COLUMN total_deposit REAL NOT NULL DEFAULT 0.0")
 
             # DB Migration: Transfer accumulated quantity from vr_incomplete_orders to vr_session_state.holdings_qty
             try:
@@ -235,6 +238,18 @@ class SQLiteManager:
                 """)
             except Exception as mig_err:
                 logger.warning(f"VR data migration warning: {mig_err}")
+
+            # 10-1. Table for VR deposit and withdrawal history
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vr_deposit_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    transfer_date TEXT NOT NULL,
+                    transfer_type TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    note TEXT
+                )
+            """)
 
             # 11. Table for VR completed trades history
             cursor.execute("""
@@ -1138,14 +1153,15 @@ class SQLiteManager:
                     "cycle_count": int(row["cycle_count"]),
                     "last_cycle_date": row["last_cycle_date"],
                     "last_rebalance_date": row["last_rebalance_date"],
-                    "holdings_qty": float(row["holdings_qty"]) if "holdings_qty" in row_keys and row["holdings_qty"] is not None else 0.0
+                    "holdings_qty": float(row["holdings_qty"]) if "holdings_qty" in row_keys and row["holdings_qty"] is not None else 0.0,
+                    "total_deposit": float(row["total_deposit"]) if "total_deposit" in row_keys and row["total_deposit"] is not None else 0.0
                 }
             return {}
         except Exception as e:
             logger.error(f"Error fetching VR session state for {symbol}: {e}")
             return {}
 
-    def save_vr_session_state(self, symbol: str, v_target: float, pocket_cash: float, cycle_count: int = 1, last_cycle_date: str = None, last_rebalance_date: str = None, holdings_qty: float = 0.0) -> bool:
+    def save_vr_session_state(self, symbol: str, v_target: float, pocket_cash: float, cycle_count: int = 1, last_cycle_date: str = None, last_rebalance_date: str = None, holdings_qty: float = 0.0, total_deposit: float = 0.0) -> bool:
         if not self._initialized:
             return False
         try:
@@ -1153,18 +1169,80 @@ class SQLiteManager:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO vr_session_state (symbol, v_target, pocket_cash, cycle_count, last_cycle_date, last_rebalance_date, holdings_qty)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO vr_session_state (symbol, v_target, pocket_cash, cycle_count, last_cycle_date, last_rebalance_date, holdings_qty, total_deposit)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (symbol, v_target, pocket_cash, cycle_count, last_cycle_date, last_rebalance_date, holdings_qty)
+                (symbol, v_target, pocket_cash, cycle_count, last_cycle_date, last_rebalance_date, holdings_qty, total_deposit)
             )
             conn.commit()
             conn.close()
-            logger.info(f"Successfully saved VR session state for {symbol}: V={v_target:.2f}, Pocket={pocket_cash:.2f}, Cycle={cycle_count}, Holdings={holdings_qty:.4f}")
+            logger.info(f"Successfully saved VR session state for {symbol}: V={v_target:.2f}, Pocket={pocket_cash:.2f}, Cycle={cycle_count}, Holdings={holdings_qty:.4f}, TotalDeposit={total_deposit:.2f}")
             return True
         except Exception as e:
             logger.error(f"Error saving VR session state for {symbol}: {e}")
             return False
+
+    def add_vr_deposit_history(self, symbol: str, transfer_type: str, amount: float, transfer_date: str = None, note: str = "") -> bool:
+        """
+        Records a deposit or withdrawal entry in vr_deposit_history.
+        """
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            if not transfer_date:
+                transfer_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute(
+                """
+                INSERT INTO vr_deposit_history (symbol, transfer_date, transfer_type, amount, note)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (symbol, transfer_date, transfer_type, amount, note)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully recorded VR deposit history for {symbol}: {transfer_type} ${amount:.2f} ({note})")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding VR deposit history for {symbol}: {e}")
+            return False
+
+    def get_vr_deposit_history(self, symbol: str = None, limit: int = 50) -> list:
+        """
+        Fetches deposit/withdrawal history for VR strategy.
+        """
+        if not self._initialized:
+            return []
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            if symbol:
+                cursor.execute(
+                    "SELECT * FROM vr_deposit_history WHERE symbol = ? ORDER BY id DESC LIMIT ?",
+                    (symbol, limit)
+                )
+            else:
+                cursor.execute(
+                    "SELECT * FROM vr_deposit_history ORDER BY id DESC LIMIT ?",
+                    (limit,)
+                )
+            rows = cursor.fetchall()
+            conn.close()
+            history = []
+            for row in rows:
+                history.append({
+                    "id": row["id"],
+                    "symbol": row["symbol"],
+                    "transferDate": row["transfer_date"],
+                    "transferType": row["transfer_type"],
+                    "amount": float(row["amount"]),
+                    "note": row["note"] or ""
+                })
+            return history
+        except Exception as e:
+            logger.error(f"Error fetching VR deposit history: {e}")
+            return []
 
     def add_vr_trade_history(self, symbol: str, quantity: float, buy_price: float, sell_price: float, profit: float, sell_order_id: str) -> bool:
         if not self._initialized:
@@ -1211,6 +1289,7 @@ class SQLiteManager:
             cursor.execute("DELETE FROM vr_pending_buy_orders WHERE symbol = ?", (symbol,))
             cursor.execute("DELETE FROM vr_incomplete_orders WHERE symbol = ?", (symbol,))
             cursor.execute("DELETE FROM vr_trades_history WHERE symbol = ?", (symbol,))
+            cursor.execute("DELETE FROM vr_deposit_history WHERE symbol = ?", (symbol,))
             conn.commit()
             conn.close()
             logger.info(f"Successfully cleared VR session state and orders for {symbol}.")

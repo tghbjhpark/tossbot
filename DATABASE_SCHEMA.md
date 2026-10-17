@@ -431,8 +431,8 @@ erDiagram
 > - 매도 시 즉시 Polling 체결 검증(`FILLED`) 후 수량을 차감하여 장부 꼬임을 원천 방지합니다.
 > - 기존 `vr_incomplete_orders` 테이블의 보유 수량은 봇 구동 시 `holdings_qty`로 자동 마이그레이션됩니다.
 
-#### ① `vr_session_state` (VR 핵심 상태 및 보유 수량)
-- **역할**: VR의 핵심 수식 상태($V$, $Pocket$, 보유 수량 $Q$, 사이클 카운트, 최근 사이클 갱신일)를 단일 레코드로 통합 보관합니다. 종목당 1개 레코드.
+#### ① `vr_session_state` (VR 핵심 상태 및 보유 수량, 누적 투입 원금)
+- **역할**: VR의 핵심 수식 상태($V$, $Pocket$, 보유 수량 $Q$, **누적 투입 원금 `total_deposit`**, 사이클 카운트, 최근 사이클 갱신일)를 단일 레코드로 통합 보관합니다. 종목당 1개 레코드.
 - **DDL**:
   ```sql
   CREATE TABLE IF NOT EXISTS vr_session_state (
@@ -442,7 +442,8 @@ erDiagram
       cycle_count INTEGER DEFAULT 1,
       last_cycle_date TEXT,
       last_rebalance_date TEXT,
-      holdings_qty REAL NOT NULL DEFAULT 0.0
+      holdings_qty REAL NOT NULL DEFAULT 0.0,
+      total_deposit REAL NOT NULL DEFAULT 0.0
   );
   ```
 - **필드 정의**:
@@ -453,6 +454,7 @@ erDiagram
 | `v_target` | REAL | NOT NULL | `0.0` | **목표 포트폴리오 평가액 ($V$)** | `500.0` |
 | `pocket_cash` | REAL | NOT NULL | `0.0` | **가상 현금 풀 ($Pocket$)** (매수 시 차감, 매도 체결 시 적립) | `485.50` |
 | `holdings_qty` | REAL | NOT NULL | `0.0` | **현재 총 보유 주식 수량 ($Q$)** (매수 체결 시 가산, 매도 체결 시 차감) | `15.3214` |
+| `total_deposit` | REAL | NOT NULL | `0.0` | **누적 투입 원금** (`cycle_deposit`/`one_time_deposit` 가산, `cycle_withdrawal` 차감) | `600.0` |
 | `cycle_count` | INTEGER | - | `1` | 현재 사이클 번호 (기본 10영업일마다 1 증가) | `3` |
 | `last_cycle_date` | TEXT | NULL 허용 | - | 마지막 사이클 정기 업데이트 일자 (`YYYY-MM-DD`) | `"2026-09-20"` |
 | `last_rebalance_date` | TEXT | NULL 허용 | - | 최근 리밸런싱 주문이 실행된 일자 (`YYYY-MM-DD`) | `"2026-10-02"` |
@@ -473,6 +475,32 @@ erDiagram
       order_amount REAL DEFAULT 0.0
   );
   ```
+
+---
+
+#### ③ `vr_deposit_history` (VR 입출금 및 원금 변동 이력)
+- **역할**: 정기 사이클 적립(`cycle_deposit`), 1회성 추가 입금(`one_time_deposit`), 정기 인출(`cycle_withdrawal`)에 따른 현금 입출금 내역을 영구 기록합니다.
+- **DDL**:
+  ```sql
+  CREATE TABLE IF NOT EXISTS vr_deposit_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL,
+      transfer_date TEXT NOT NULL,
+      transfer_type TEXT NOT NULL,
+      amount REAL NOT NULL,
+      note TEXT
+  );
+  ```
+- **필드 정의**:
+
+| 컬럼명 | 타입 | 제약조건 | 설명 | 예시값 |
+| :--- | :--- | :--- | :--- | :--- |
+| `id` | INTEGER | PK (AUTO) | 고유 일련번호 | `1` |
+| `symbol` | TEXT | NOT NULL | 종목 코드 | `"SOXL"` |
+| `transfer_date` | TEXT | NOT NULL | 입출금 발생 일시 (`YYYY-MM-DD HH:MM:SS`) | `"2026-10-17 17:05:00"` |
+| `transfer_type` | TEXT | NOT NULL | 입출금 구분 (`DEPOSIT` / `WITHDRAWAL`) | `"DEPOSIT"` |
+| `amount` | REAL | NOT NULL | 입출금 금액 | `100.0` |
+| `note` | TEXT | NULL 허용 | 입출금 사유 및 비고 | `"1회성 추가 입금 (one_time_deposit)"` |
 
 ---
 
