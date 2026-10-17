@@ -251,6 +251,21 @@ class SQLiteManager:
                 )
             """)
 
+            # 10-2. Table for VR rebalance history
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vr_rebalance_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    rebalance_date TEXT NOT NULL,
+                    cycle_count INTEGER NOT NULL,
+                    v_target REAL NOT NULL,
+                    pocket_cash REAL NOT NULL,
+                    holdings_qty REAL DEFAULT 0.0,
+                    action TEXT NOT NULL,
+                    note TEXT
+                )
+            """)
+
             # 11. Table for VR completed trades history
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS vr_trades_history (
@@ -1244,6 +1259,71 @@ class SQLiteManager:
             logger.error(f"Error fetching VR deposit history: {e}")
             return []
 
+    def add_vr_rebalance_history(self, symbol: str, cycle_count: int, v_target: float, pocket_cash: float, holdings_qty: float = 0.0, action: str = "CYCLE_UPDATE", rebalance_date: str = None, note: str = "") -> bool:
+        """
+        Records a rebalancing history entry in vr_rebalance_history.
+        """
+        if not self._initialized:
+            return False
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            if not rebalance_date:
+                rebalance_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute(
+                """
+                INSERT INTO vr_rebalance_history (symbol, rebalance_date, cycle_count, v_target, pocket_cash, holdings_qty, action, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (symbol, rebalance_date, cycle_count, v_target, pocket_cash, holdings_qty, action, note)
+            )
+            conn.commit()
+            conn.close()
+            logger.info(f"Successfully recorded VR rebalance history for {symbol}: Cycle #{cycle_count}, V=${v_target:.2f}, Pocket=${pocket_cash:.2f}, Action={action}")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding VR rebalance history for {symbol}: {e}")
+            return False
+
+    def get_vr_rebalance_history(self, symbol: str = None, limit: int = 50) -> list:
+        """
+        Fetches rebalance history for VR strategy.
+        """
+        if not self._initialized:
+            return []
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            if symbol:
+                cursor.execute(
+                    "SELECT * FROM vr_rebalance_history WHERE symbol = ? ORDER BY id DESC LIMIT ?",
+                    (symbol, limit)
+                )
+            else:
+                cursor.execute(
+                    "SELECT * FROM vr_rebalance_history ORDER BY id DESC LIMIT ?",
+                    (limit,)
+                )
+            rows = cursor.fetchall()
+            conn.close()
+            history = []
+            for row in rows:
+                history.append({
+                    "id": row["id"],
+                    "symbol": row["symbol"],
+                    "rebalanceDate": row["rebalance_date"],
+                    "cycleCount": int(row["cycle_count"]),
+                    "vTarget": float(row["v_target"]),
+                    "pocketCash": float(row["pocket_cash"]),
+                    "holdingsQty": float(row["holdings_qty"]),
+                    "action": row["action"],
+                    "note": row["note"] or ""
+                })
+            return history
+        except Exception as e:
+            logger.error(f"Error fetching VR rebalance history: {e}")
+            return []
+
     def add_vr_trade_history(self, symbol: str, quantity: float, buy_price: float, sell_price: float, profit: float, sell_order_id: str) -> bool:
         if not self._initialized:
             return False
@@ -1290,6 +1370,7 @@ class SQLiteManager:
             cursor.execute("DELETE FROM vr_incomplete_orders WHERE symbol = ?", (symbol,))
             cursor.execute("DELETE FROM vr_trades_history WHERE symbol = ?", (symbol,))
             cursor.execute("DELETE FROM vr_deposit_history WHERE symbol = ?", (symbol,))
+            cursor.execute("DELETE FROM vr_rebalance_history WHERE symbol = ?", (symbol,))
             conn.commit()
             conn.close()
             logger.info(f"Successfully cleared VR session state and orders for {symbol}.")

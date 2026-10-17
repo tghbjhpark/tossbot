@@ -504,6 +504,38 @@ erDiagram
 
 ---
 
+#### ④ `vr_rebalance_history` (VR 리밸런싱 히스토리)
+- **역할**: 사이클 갱신 시점 및 실제 리밸런싱 매수/매도 발생 시점의 목표치($V$), Pocket 현금, 보유 수량의 스냅샷을 영구 기록합니다.
+- **DDL**:
+  ```sql
+  CREATE TABLE IF NOT EXISTS vr_rebalance_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL,
+      rebalance_date TEXT NOT NULL,
+      cycle_count INTEGER NOT NULL,
+      v_target REAL NOT NULL,
+      pocket_cash REAL NOT NULL,
+      holdings_qty REAL DEFAULT 0.0,
+      action TEXT NOT NULL,
+      note TEXT
+  );
+  ```
+- **필드 정의**:
+
+| 컬럼명 | 타입 | 제약조건 | 설명 | 예시값 |
+| :--- | :--- | :--- | :--- | :--- |
+| `id` | INTEGER | PK (AUTO) | 고유 일련번호 | `1` |
+| `symbol` | TEXT | NOT NULL | 종목 코드 | `"SOXL"` |
+| `rebalance_date` | TEXT | NOT NULL | 리밸런싱 일시 (`YYYY-MM-DD HH:MM:SS`) | `"2026-10-17 17:15:00"` |
+| `cycle_count` | INTEGER | NOT NULL | 사이클 번호 | `3` |
+| `v_target` | REAL | NOT NULL | **당시 목표 포트폴리오 가치 ($V$)** | `500.0` |
+| `pocket_cash` | REAL | NOT NULL | **당시 가상 현금 풀 ($Pocket$)** | `485.50` |
+| `holdings_qty` | REAL | NOT NULL | 당시 보유 수량 | `15.3214` |
+| `action` | TEXT | NOT NULL | 이벤트 구분 (`CYCLE_UPDATE`, `BUY`, `SELL`, `INIT`) | `"CYCLE_UPDATE"` |
+| `note` | TEXT | NULL 허용 | 상세 내용 및 전이 설명 | `"Cycle #3 갱신: V=$500.00->$550.00"` |
+
+---
+
 #### [레거시/보존 테이블]
 - `vr_incomplete_orders`: 과거 개별 매수 주문 테이블 (이전 데이터 보존 및 롤백 대비용 보관, 신규 로직에서는 미사용).
 - `vr_trades_history`: 과거 매도 차익 기록 테이블 (신규 로직에서는 포트폴리오 가치 관리 중심으로 미사용).

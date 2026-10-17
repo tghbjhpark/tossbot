@@ -51,6 +51,17 @@ class VrStrategy(BaseStrategy):
             self.holdings_qty = 0.0
             self.total_deposit = 0.0
             self._save_session_state()
+            now_dt_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.db_manager.add_vr_rebalance_history(
+                symbol=self.ticker,
+                cycle_count=self.cycle_count,
+                v_target=self.v_target,
+                pocket_cash=self.pocket_cash,
+                holdings_qty=self.holdings_qty,
+                action="INIT",
+                rebalance_date=now_dt_str,
+                note="VR 세션 신규 생성 및 초기화"
+            )
 
         mode = self.config.get("mode", "ACCUMULATE")
         band_rate = float(self.config.get("band_rate", 0.15))
@@ -242,6 +253,17 @@ class VrStrategy(BaseStrategy):
             f"Total Deposit: ${self.total_deposit:.2f}"
         )
         self._save_session_state()
+        now_dt_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.db_manager.add_vr_rebalance_history(
+            symbol=self.ticker,
+            cycle_count=self.cycle_count,
+            v_target=self.v_target,
+            pocket_cash=self.pocket_cash,
+            holdings_qty=self.holdings_qty,
+            action="CYCLE_UPDATE",
+            rebalance_date=now_dt_str,
+            note=f"Cycle #{self.cycle_count} 갱신: V=${old_v:.2f}->${self.v_target:.2f}, Pocket=${old_pocket:.2f}->${self.pocket_cash:.2f}"
+        )
 
     def _perform_rebalance(self, current_price: float, today_us_date: str):
         """
@@ -439,6 +461,17 @@ class VrStrategy(BaseStrategy):
                     self.holdings_qty = max(0.0, self.holdings_qty - actual_filled_qty)
                     self.pocket_cash += actual_proceeds
                     self._save_session_state()
+                    now_dt_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self.db_manager.add_vr_rebalance_history(
+                        symbol=self.ticker,
+                        cycle_count=self.cycle_count,
+                        v_target=self.v_target,
+                        pocket_cash=self.pocket_cash,
+                        holdings_qty=self.holdings_qty,
+                        action="SELL",
+                        rebalance_date=now_dt_str,
+                        note=f"상단 밴드 초과 리밸런싱 매도: {actual_filled_qty:.4f}주 매도, 대금 +${actual_proceeds:.2f}"
+                    )
                     logger.info(
                         f"VR [{self.ticker}] - Sell Order {oid} CONFIRMED FILLED! "
                         f"Sold: {actual_filled_qty:.4f} shares | Proceeds: +${actual_proceeds:.2f} | "
@@ -480,6 +513,17 @@ class VrStrategy(BaseStrategy):
 
                 self.holdings_qty += exec_qty
                 self._save_session_state()
+                now_dt_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.db_manager.add_vr_rebalance_history(
+                    symbol=self.ticker,
+                    cycle_count=self.cycle_count,
+                    v_target=self.v_target,
+                    pocket_cash=self.pocket_cash,
+                    holdings_qty=self.holdings_qty,
+                    action="BUY",
+                    rebalance_date=now_dt_str,
+                    note=f"하단 밴드 미달 리밸런싱 매수: {exec_qty:.4f}주 체결 (@${exec_price:.2f})"
+                )
                 self.db_manager.remove_vr_pending_buy_order(oid)
                 del self.pending_buy_orders[oid]
                 logger.info(
