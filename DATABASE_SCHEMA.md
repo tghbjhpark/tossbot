@@ -424,10 +424,43 @@ erDiagram
 
 ### 2.3 VR 전략 (라오어 밸류 리밸런싱)
 
-포트폴리오 목표 평가액($V$)과 가상 현금 풀($Pocket$)을 유지하며, 장중 실시간 밴드($V_{min} \sim V_{max}$, 기본 $\pm 15\%$)를 이탈할 때마다 고가 매도 및 저가 매수를 반복하는 전략입니다.
+포트폴리오 목표 평가액($V$)과 가상 현금 풀($Pocket$), 그리고 **단일 보유 수량($Q$, `holdings_qty`)**을 유지하며, 장중 실시간 밴드($V_{min} \sim V_{max}$, 기본 $\pm 15\%$)를 이탈할 때마다 고가 매도 및 저가 매수를 반복하는 자산배분 전략입니다.
 
-#### ① `vr_pending_buy_orders` (VR 미체결 리밸런싱 매수 주문)
-- **역할**: 하단 밴드 이탈($E < V_{min}$) 시 발주된 체결 대기 매수 주문. 체결 시 `vr_incomplete_orders`로 이동합니다.
+> **💡 최적화 리팩토링 완료**:
+> - 개별 주문별 FIFO 분할 차감 및 손익 추적 비효율을 제거하고, `vr_session_state.holdings_qty` 단일 컬럼으로 보유 수량을 집중 관리합니다.
+> - 매도 시 즉시 Polling 체결 검증(`FILLED`) 후 수량을 차감하여 장부 꼬임을 원천 방지합니다.
+> - 기존 `vr_incomplete_orders` 테이블의 보유 수량은 봇 구동 시 `holdings_qty`로 자동 마이그레이션됩니다.
+
+#### ① `vr_session_state` (VR 핵심 상태 및 보유 수량)
+- **역할**: VR의 핵심 수식 상태($V$, $Pocket$, 보유 수량 $Q$, 사이클 카운트, 최근 사이클 갱신일)를 단일 레코드로 통합 보관합니다. 종목당 1개 레코드.
+- **DDL**:
+  ```sql
+  CREATE TABLE IF NOT EXISTS vr_session_state (
+      symbol TEXT PRIMARY KEY,
+      v_target REAL NOT NULL DEFAULT 0.0,
+      pocket_cash REAL NOT NULL DEFAULT 0.0,
+      cycle_count INTEGER DEFAULT 1,
+      last_cycle_date TEXT,
+      last_rebalance_date TEXT,
+      holdings_qty REAL NOT NULL DEFAULT 0.0
+  );
+  ```
+- **필드 정의**:
+
+| 컬럼명 | 타입 | 제약조건 | 기본값 | 설명 및 비즈니스 의미 | 예시값 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `symbol` | TEXT | PK | - | 종목 코드 | `"SOXL"` |
+| `v_target` | REAL | NOT NULL | `0.0` | **목표 포트폴리오 평가액 ($V$)** | `500.0` |
+| `pocket_cash` | REAL | NOT NULL | `0.0` | **가상 현금 풀 ($Pocket$)** (매수 시 차감, 매도 체결 시 적립) | `485.50` |
+| `holdings_qty` | REAL | NOT NULL | `0.0` | **현재 총 보유 주식 수량 ($Q$)** (매수 체결 시 가산, 매도 체결 시 차감) | `15.3214` |
+| `cycle_count` | INTEGER | - | `1` | 현재 사이클 번호 (기본 10영업일마다 1 증가) | `3` |
+| `last_cycle_date` | TEXT | NULL 허용 | - | 마지막 사이클 정기 업데이트 일자 (`YYYY-MM-DD`) | `"2026-09-20"` |
+| `last_rebalance_date` | TEXT | NULL 허용 | - | 최근 리밸런싱 주문이 실행된 일자 (`YYYY-MM-DD`) | `"2026-10-02"` |
+
+---
+
+#### ② `vr_pending_buy_orders` (VR 미체결 리밸런싱 매수 주문 - 임시 큐)
+- **역할**: 하단 밴드 이탈($E < V_{min}$) 시 발주된 체결 대기 매수 주문. 중복 매수를 방지하며, 체결(`FILLED`) 확인 즉시 `holdings_qty`에 가산 후 삭제됩니다.
 - **DDL**:
   ```sql
   CREATE TABLE IF NOT EXISTS vr_pending_buy_orders (
@@ -443,76 +476,9 @@ erDiagram
 
 ---
 
-#### ② `vr_incomplete_orders` (VR 현재 보유 포지션)
-- **역할**: VR 전략으로 매수되어 현재 보유 중인 주식 수량과 단가 이력.
-- **DDL**:
-  ```sql
-  CREATE TABLE IF NOT EXISTS vr_incomplete_orders (
-      order_id TEXT PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      price REAL NOT NULL,
-      quantity REAL NOT NULL,
-      ordered_at TEXT NOT NULL
-  );
-  ```
-- **필드 정의**:
-
-| 컬럼명 | 타입 | 제약조건 | 설명 | 예시값 |
-| :--- | :--- | :--- | :--- | :--- |
-| `order_id` | TEXT | PK | 매수 체결 주문 ID | `"vr_buy_172810"` |
-| `symbol` | TEXT | NOT NULL | 종목 코드 | `"SOXL"` |
-| `price` | REAL | NOT NULL | 매수 체결 단가 | `28.50` |
-| `quantity` | REAL | NOT NULL | 보유 수량 (매도 발생 시 비례 차감) | `3.5087` |
-| `ordered_at` | TEXT | NOT NULL | 매수 체결 일시 | `"2026-10-01T10:15:00"` |
-
----
-
-#### ③ `vr_session_state` (VR 포트폴리오 가치 및 사이클 메타데이터)
-- **역할**: VR의 핵심 수식 상태($V$, $Pocket$, 사이클 카운트, 최근 사이클 갱신일)를 보관합니다. 종목당 1개 레코드.
-- **DDL**:
-  ```sql
-  CREATE TABLE IF NOT EXISTS vr_session_state (
-      symbol TEXT PRIMARY KEY,
-      v_target REAL NOT NULL DEFAULT 0.0,
-      pocket_cash REAL NOT NULL DEFAULT 0.0,
-      cycle_count INTEGER DEFAULT 1,
-      last_cycle_date TEXT,
-      last_rebalance_date TEXT
-  );
-  ```
-- **필드 정의**:
-
-| 컬럼명 | 타입 | 제약조건 | 기본값 | 설명 및 비즈니스 의미 | 예시값 |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `symbol` | TEXT | PK | - | 종목 코드 | `"SOXL"` |
-| `v_target` | REAL | NOT NULL | `0.0` | **목표 포트폴리오 평가액 ($V$)** | `500.0` |
-| `pocket_cash` | REAL | NOT NULL | `0.0` | **가상 현금 풀 ($Pocket$)** (매수 시 차감, 매도 시 적립) | `485.50` |
-| `cycle_count` | INTEGER | - | `1` | 현재 사이클 번호 (기본 10영업일마다 1 증가) | `3` |
-| `last_cycle_date` | TEXT | NULL 허용 | - | 마지막 사이클 정기 업데이트 일자 (`YYYY-MM-DD`) | `"2026-09-20"` |
-| `last_rebalance_date` | TEXT | NULL 허용 | - | 최근 리밸런싱 주문이 실행된 일자 (`YYYY-MM-DD`) | `"2026-10-02"` |
-
----
-
-#### ④ `vr_trades_history` (VR 리밸런싱 매도 실현 내역)
-- **역할**: 상단 밴드 돌파($E > V_{max}$) 시 목표 가치 $V$까지 초과 주식을 분할 매도하여 발생한 실현 손익 기록.
-- **DDL**:
-  ```sql
-  CREATE TABLE IF NOT EXISTS vr_trades_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      sell_order_id TEXT,
-      symbol TEXT NOT NULL,
-      quantity REAL NOT NULL,
-      buy_price REAL NOT NULL,
-      buy_time TEXT,
-      sell_price REAL,
-      sell_time TEXT,
-      profit REAL,
-      status TEXT NOT NULL
-  );
-  ```
-- **필드 정의**: `profit`은 매도 체결 단가와 보유 주식의 평균 단가 차이에 따른 실현 차익.
-
----
+#### [레거시/보존 테이블]
+- `vr_incomplete_orders`: 과거 개별 매수 주문 테이블 (이전 데이터 보존 및 롤백 대비용 보관, 신규 로직에서는 미사용).
+- `vr_trades_history`: 과거 매도 차익 기록 테이블 (신규 로직에서는 포트폴리오 가치 관리 중심으로 미사용).
 
 ### 2.4 TVR 전략 (타깃 밸류 리밸런싱)
 

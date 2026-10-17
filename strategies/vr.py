@@ -22,7 +22,7 @@ class VrStrategy(BaseStrategy):
 
     def initialize_state(self):
         """
-        Loads persistent VR session state (V, pocket_cash, cycle info) from SQLite database.
+        Loads persistent VR session state (V, pocket_cash, cycle info, holdings_qty) from SQLite database.
         Initializes default values from config if state does not exist in DB.
         """
         self.symbol = self.ticker
@@ -38,6 +38,7 @@ class VrStrategy(BaseStrategy):
             self.cycle_count = int(state.get("cycle_count", 1))
             self.last_cycle_date = state.get("last_cycle_date")
             self.last_rebalance_date = state.get("last_rebalance_date")
+            self.holdings_qty = float(state.get("holdings_qty", 0.0))
         else:
             self.v_target = float(config_v) if config_v is not None else 500.0
             self.pocket_cash = float(config_pocket) if config_pocket is not None else 500.0
@@ -46,6 +47,7 @@ class VrStrategy(BaseStrategy):
             now_str = datetime.now(tz_us).strftime("%Y-%m-%d")
             self.last_cycle_date = now_str
             self.last_rebalance_date = None
+            self.holdings_qty = 0.0
             self._save_session_state()
 
         mode = self.config.get("mode", "ACCUMULATE")
@@ -57,9 +59,10 @@ class VrStrategy(BaseStrategy):
         logger.info(
             f"VR Ticker [{self.ticker}] | Mode: {mode} | V Target: ${self.v_target:.2f} | "
             f"Pocket Cash: ${self.pocket_cash:.2f} | Cycle: {self.cycle_count} | "
+            f"Holdings: {self.holdings_qty:.4f} shares | "
             f"G Factor: {g_factor} | Band Rate: {band_rate * 100:.1f}% | Min Trade: ${min_trade_amount:.2f} | "
             f"Daily Rebalance Hour: {rebalance_hour}:00 US ET | "
-            f"Holdings: {len(self.incomplete_orders)} | Pending Buys: {len(self.pending_buy_orders)}"
+            f"Pending Buys: {len(self.pending_buy_orders)}"
         )
         self.buy_failure_cooldown_until = None
         self._check_one_time_deposit()
@@ -95,7 +98,8 @@ class VrStrategy(BaseStrategy):
             pocket_cash=self.pocket_cash,
             cycle_count=self.cycle_count,
             last_cycle_date=self.last_cycle_date,
-            last_rebalance_date=self.last_rebalance_date
+            last_rebalance_date=self.last_rebalance_date,
+            holdings_qty=self.holdings_qty
         )
 
     def evaluate(self, current_price: float):
@@ -184,8 +188,7 @@ class VrStrategy(BaseStrategy):
         target_cash_ratio = self.config.get("target_cash_ratio")
         if target_cash_ratio is not None and float(target_cash_ratio) > 0 and current_price > 0:
             ratio = float(target_cash_ratio)
-            total_qty = sum(float(order.get("quantity", 0.0)) for order in self.incomplete_orders.values())
-            stock_valuation = total_qty * current_price
+            stock_valuation = self.holdings_qty * current_price
             total_asset = stock_valuation + self.pocket_cash
             target_cash = total_asset * ratio
             cash_excess = self.pocket_cash - target_cash
@@ -210,7 +213,7 @@ class VrStrategy(BaseStrategy):
         Calculates valuation E, compares with V_max and V_min, and executes rebalancing orders.
         """
         # Calculate current total holdings quantity and valuation E
-        total_qty = sum(float(order.get("quantity", 0.0)) for order in self.incomplete_orders.values())
+        total_qty = self.holdings_qty
         valuation = total_qty * current_price
 
         band_rate = float(self.config.get("band_rate", 0.15))
@@ -342,13 +345,17 @@ class VrStrategy(BaseStrategy):
 
     def _execute_vr_sell(self, current_price: float, sell_qty: float, approx_sell_amount: float) -> bool:
         """
-        Executes a VR sell order (supports fractional shares if sell_qty >= min_sell_qty) and adds expected proceeds to Pocket Cash.
-        Returns True if order was placed successfully, False otherwise.
+        Executes a VR sell order (supports fractional shares if sell_qty >= min_sell_qty),
+        verifies execution via polling, and updates holdings_qty and Pocket Cash upon confirmed fill.
+        Returns True if order was placed and confirmed filled, False otherwise.
         """
         min_sell_qty = float(self.config.get("min_sell_qty", 1.0))
         if sell_qty < min_sell_qty:
             logger.info(f"VR [{self.ticker}] - Calculated sell qty {sell_qty:.4f} is below minimum {min_sell_qty} share. Skipping sell.")
             return False
+
+        if sell_qty > self.holdings_qty:
+            sell_qty = self.holdings_qty
 
         buy_mode = self.config.get("buy_mode", "AMOUNT").upper()
         try:
@@ -363,35 +370,52 @@ class VrStrategy(BaseStrategy):
 
             if res and "orderId" in res:
                 oid = res["orderId"]
-                proceeds = exec_qty * current_price
-                self.pocket_cash += proceeds
-                self._save_session_state()
+                logger.info(f"VR [{self.ticker}] - Placed sell order {oid} ({exec_qty:.4f} shares). Polling for execution confirmation...")
 
-                # Record trade history
-                total_cost = sum(float(o.get("price", 0.0)) * float(o.get("quantity", 0.0)) for o in self.incomplete_orders.values())
-                total_qty = sum(float(o.get("quantity", 0.0)) for o in self.incomplete_orders.values())
-                avg_buy_price = (total_cost / total_qty) if total_qty > 0 else current_price
-                profit = (current_price - avg_buy_price) * exec_qty
+                # Polling for execution confirmation (up to 3 attempts, 1.5s interval)
+                is_filled = False
+                actual_filled_qty = exec_qty
+                actual_proceeds = exec_qty * current_price
 
-                self.db_manager.add_vr_trade_history(self.ticker, exec_qty, avg_buy_price, current_price, profit, oid)
+                for attempt in range(3):
+                    time.sleep(1.5)
+                    try:
+                        details = self.api_client.get_order_details(oid)
+                        if details:
+                            status = details.get("status", "").upper()
+                            if status in ["FILLED", "SUCCESS", "COMPLETED"]:
+                                is_filled = True
+                                execution = details.get("execution", {})
+                                filled_q_str = execution.get("filledQuantity") or details.get("executedQuantity")
+                                avg_p_str = execution.get("averageFilledPrice") or details.get("executedPrice")
+                                if filled_q_str:
+                                    actual_filled_qty = float(filled_q_str)
+                                if avg_p_str:
+                                    exec_p = float(avg_p_str)
+                                    actual_proceeds = actual_filled_qty * exec_p
+                                break
+                            elif status in ["CANCELLED", "REJECTED", "FAILED"]:
+                                logger.warning(f"VR [{self.ticker}] - Sell order {oid} was {status}.")
+                                break
+                    except Exception as poll_err:
+                        logger.warning(f"VR [{self.ticker}] - Error polling sell order {oid}: {poll_err}")
 
-                # Reduce incomplete orders proportionally or remove
-                remaining_to_deduct = float(exec_qty)
-                for order_key in list(self.incomplete_orders.keys()):
-                    ord_qty = float(self.incomplete_orders[order_key].get("quantity", 0.0))
-                    if ord_qty <= remaining_to_deduct:
-                        remaining_to_deduct -= ord_qty
-                        del self.incomplete_orders[order_key]
-                        self.db_manager.remove_vr_incomplete_order(order_key)
-                    else:
-                        new_qty = ord_qty - remaining_to_deduct
-                        self.incomplete_orders[order_key]["quantity"] = str(new_qty)
-                        self.db_manager.add_vr_incomplete_order(order_key, self.incomplete_orders[order_key])
-                        remaining_to_deduct = 0
-                        break
-
-                logger.info(f"VR [{self.ticker}] - Executed Sell Order ID={oid}, Qty={exec_qty:.4f} shares, Price=${current_price:.2f}, Profit=${profit:.2f}. New Pocket Cash: ${self.pocket_cash:.2f}")
-                return True
+                if is_filled:
+                    self.holdings_qty = max(0.0, self.holdings_qty - actual_filled_qty)
+                    self.pocket_cash += actual_proceeds
+                    self._save_session_state()
+                    logger.info(
+                        f"VR [{self.ticker}] - Sell Order {oid} CONFIRMED FILLED! "
+                        f"Sold: {actual_filled_qty:.4f} shares | Proceeds: +${actual_proceeds:.2f} | "
+                        f"New Holdings: {self.holdings_qty:.4f} | New Pocket Cash: ${self.pocket_cash:.2f}"
+                    )
+                    return True
+                else:
+                    logger.warning(
+                        f"VR [{self.ticker}] - Sell order {oid} was not confirmed FILLED during polling. "
+                        f"Holding state and Pocket Cash remain unchanged to prevent desync."
+                    )
+                    return False
         except Exception as e:
             logger.error(f"VR [{self.ticker}] - Failed to place sell order: {e}")
             return False
@@ -400,7 +424,7 @@ class VrStrategy(BaseStrategy):
 
     def _verify_buy_executions(self):
         """
-        Verifies pending VR buy orders against Toss OpenAPI and moves filled orders to holdings.
+        Verifies pending VR buy orders against Toss OpenAPI and updates holdings upon confirmed fill.
         """
         if not self.pending_buy_orders:
             return
@@ -419,17 +443,14 @@ class VrStrategy(BaseStrategy):
                 exec_qty = float(order_detail.get("executedQuantity", pending_info.get("quantity", 0.0)))
                 exec_price = float(order_detail.get("executedPrice", pending_info.get("price", 0.0)))
 
-                holding_data = {
-                    "symbol": self.ticker,
-                    "price": exec_price,
-                    "quantity": exec_qty,
-                    "orderedAt": pending_info.get("orderedAt", datetime.now().isoformat())
-                }
-                self.incomplete_orders[oid] = holding_data
-                self.db_manager.add_vr_incomplete_order(oid, holding_data)
+                self.holdings_qty += exec_qty
+                self._save_session_state()
                 self.db_manager.remove_vr_pending_buy_order(oid)
                 del self.pending_buy_orders[oid]
-                logger.info(f"VR [{self.ticker}] - Buy Order {oid} FILLED! Exec Qty={exec_qty:.4f}, Price=${exec_price:.2f}")
+                logger.info(
+                    f"VR [{self.ticker}] - Buy Order {oid} FILLED! "
+                    f"Exec Qty={exec_qty:.4f}, Price=${exec_price:.2f}. Total Holdings: {self.holdings_qty:.4f}"
+                )
             elif status in ["CANCELLED", "REJECTED", "FAILED"]:
                 # Refund pocket cash if order failed/cancelled
                 refund_amount = pending_info.get("orderAmount", 0.0)

@@ -209,9 +209,32 @@ class SQLiteManager:
                     pocket_cash REAL NOT NULL DEFAULT 0.0,
                     cycle_count INTEGER DEFAULT 1,
                     last_cycle_date TEXT,
-                    last_rebalance_date TEXT
+                    last_rebalance_date TEXT,
+                    holdings_qty REAL NOT NULL DEFAULT 0.0
                 )
             """)
+
+            cursor.execute("PRAGMA table_info(vr_session_state)")
+            vr_columns = [column[1] for column in cursor.fetchall()]
+            if "holdings_qty" not in vr_columns:
+                cursor.execute("ALTER TABLE vr_session_state ADD COLUMN holdings_qty REAL NOT NULL DEFAULT 0.0")
+
+            # DB Migration: Transfer accumulated quantity from vr_incomplete_orders to vr_session_state.holdings_qty
+            try:
+                cursor.execute("""
+                    UPDATE vr_session_state 
+                    SET holdings_qty = (
+                        SELECT COALESCE(SUM(quantity), 0.0)
+                        FROM vr_incomplete_orders 
+                        WHERE vr_incomplete_orders.symbol = vr_session_state.symbol
+                    )
+                    WHERE holdings_qty = 0.0 
+                      AND EXISTS (
+                          SELECT 1 FROM vr_incomplete_orders WHERE vr_incomplete_orders.symbol = vr_session_state.symbol
+                      )
+                """)
+            except Exception as mig_err:
+                logger.warning(f"VR data migration warning: {mig_err}")
 
             # 11. Table for VR completed trades history
             cursor.execute("""
@@ -1107,20 +1130,22 @@ class SQLiteManager:
             row = cursor.fetchone()
             conn.close()
             if row:
+                row_keys = row.keys() if hasattr(row, "keys") else []
                 return {
                     "symbol": row["symbol"],
                     "v_target": float(row["v_target"]),
                     "pocket_cash": float(row["pocket_cash"]),
                     "cycle_count": int(row["cycle_count"]),
                     "last_cycle_date": row["last_cycle_date"],
-                    "last_rebalance_date": row["last_rebalance_date"]
+                    "last_rebalance_date": row["last_rebalance_date"],
+                    "holdings_qty": float(row["holdings_qty"]) if "holdings_qty" in row_keys and row["holdings_qty"] is not None else 0.0
                 }
             return {}
         except Exception as e:
             logger.error(f"Error fetching VR session state for {symbol}: {e}")
             return {}
 
-    def save_vr_session_state(self, symbol: str, v_target: float, pocket_cash: float, cycle_count: int = 1, last_cycle_date: str = None, last_rebalance_date: str = None) -> bool:
+    def save_vr_session_state(self, symbol: str, v_target: float, pocket_cash: float, cycle_count: int = 1, last_cycle_date: str = None, last_rebalance_date: str = None, holdings_qty: float = 0.0) -> bool:
         if not self._initialized:
             return False
         try:
@@ -1128,14 +1153,14 @@ class SQLiteManager:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO vr_session_state (symbol, v_target, pocket_cash, cycle_count, last_cycle_date, last_rebalance_date)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO vr_session_state (symbol, v_target, pocket_cash, cycle_count, last_cycle_date, last_rebalance_date, holdings_qty)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (symbol, v_target, pocket_cash, cycle_count, last_cycle_date, last_rebalance_date)
+                (symbol, v_target, pocket_cash, cycle_count, last_cycle_date, last_rebalance_date, holdings_qty)
             )
             conn.commit()
             conn.close()
-            logger.info(f"Successfully saved VR session state for {symbol}: V={v_target:.2f}, Pocket={pocket_cash:.2f}, Cycle={cycle_count}")
+            logger.info(f"Successfully saved VR session state for {symbol}: V={v_target:.2f}, Pocket={pocket_cash:.2f}, Cycle={cycle_count}, Holdings={holdings_qty:.4f}")
             return True
         except Exception as e:
             logger.error(f"Error saving VR session state for {symbol}: {e}")

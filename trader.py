@@ -63,7 +63,6 @@ class TradeBot:
         raw_dca_pending = self.db_manager.get_dca_pending_buy_orders()
         
         # Load VR data
-        raw_vr_incomplete = self.db_manager.get_vr_incomplete_orders()
         raw_vr_pending = self.db_manager.get_vr_pending_buy_orders()
         
         # Load CRSI data
@@ -85,9 +84,7 @@ class TradeBot:
                     oid: order for oid, order in raw_dca_pending.items() if order.get("symbol") == ticker
                 }
             elif strategy_name == "VR":
-                strategy.incomplete_orders = {
-                    oid: order for oid, order in raw_vr_incomplete.items() if order.get("symbol") == ticker
-                }
+                strategy.incomplete_orders = {}
                 strategy.pending_buy_orders = {
                     oid: order for oid, order in raw_vr_pending.items() if order.get("symbol") == ticker
                 }
